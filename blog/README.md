@@ -1,10 +1,10 @@
 # Blog Application
 
-A Spring Boot-based blogging website built with Java and Vue3.js. This version features a modern, responsive blog post display with centered layout and beautiful UI design.
+A Spring Boot-based blogging website built with Java and Vue3.js. This version features a modern, responsive multi-page blog with navigation bar, contact form, and beautiful UI design.
 
 ## Project Description
 
-This is a blogging website application built using Spring Boot, Java, and Vue3.js. The application displays a styled blog post with a modern, responsive design. The homepage features a centered blog post card with proper spacing, gradient background, and smooth hover effects. It's designed to be the foundation for a full-featured blog platform with plans for future enhancements including database integration, multiple blog posts, user authentication, and more.
+This is a blogging website application built using Spring Boot, Java, and Vue3.js. The application features a complete multi-page blog with a fixed navigation bar, multiple pages (Home, About, Contact, Categories, Archive), and a modern, responsive design. The site includes a homepage with blog posts, an about page with author information, a fully functional contact form with social media links, and placeholder pages for future features. The design features a beautiful purple gradient background, smooth animations, and a mobile-responsive hamburger menu. It's designed to be the foundation for a full-featured blog platform with plans for future enhancements including database integration, multiple blog posts, user authentication, and more.
 
 ## Technologies Used
 
@@ -58,14 +58,16 @@ blog/
 │   │   │       └── blog/
 │   │   │           ├── BlogApplication.java      # Main Spring Boot application class
 │   │   │           └── controller/
-│   │   │               └── HomeController.java   # Controller serving the HTML template
+│   │   │               └── HomeController.java   # Controller with all page routes
 │   │   └── resources/
 │   │       ├── application.properties            # Application configuration
 │   │       └── templates/
-│   │           └── index.html                    # Main page with Vue3.js integration
+│   │           ├── index.html                    # Home page with blog posts
+│   │           ├── about.html                    # About page
+│   │           ├── contact.html                  # Contact page with form
+│   │           ├── categories.html               # Categories page (Under Construction)
+│   │           └── archive.html                  # Archive page (Under Construction)
 ├── pom.xml                                       # Maven configuration file
-├── 001-step-by-step-init                         # Initial setup documentation
-├── 002-step-by-step-ui-init.txt                 # UI implementation plan
 └── README.md                                     # This file
 ```
 
@@ -90,13 +92,21 @@ blog/
    http://localhost:8080
    ```
 
-5. **You should see** a blog post page with:
-   - Centered blog post card with purple gradient background
+5. **You should see** the blog home page with:
+   - Fixed navigation bar at the top with links to: Home, About, Categories, Archive, Contact
+   - Responsive hamburger menu on mobile devices
+   - Purple gradient background (#667eea to #764ba2)
+   - Centered blog post card
    - Blog post title: "Welcome to My Blog"
    - Author and date metadata
    - Multiple paragraphs of content
-   - Responsive design that adapts to different screen sizes
-   - Smooth hover effects
+   - Smooth animations and hover effects
+   
+6. **Explore the site:**
+   - Click on **About** to see author information and background
+   - Click on **Contact** to access the contact form with social media links
+   - Click on **Categories** or **Archive** to see "Under Construction" pages
+   - Try resizing your browser to see the responsive navigation menu
 
 ### Method 2: Using an IDE
 
@@ -115,13 +125,21 @@ blog/
    http://localhost:8080
    ```
 
-5. **You should see** a blog post page with:
-   - Centered blog post card with purple gradient background
+5. **You should see** the blog home page with:
+   - Fixed navigation bar at the top with links to: Home, About, Categories, Archive, Contact
+   - Responsive hamburger menu on mobile devices
+   - Purple gradient background (#667eea to #764ba2)
+   - Centered blog post card
    - Blog post title: "Welcome to My Blog"
    - Author and date metadata
    - Multiple paragraphs of content
-   - Responsive design that adapts to different screen sizes
-   - Smooth hover effects
+   - Smooth animations and hover effects
+   
+6. **Explore the site:**
+   - Click on **About** to see author information and background
+   - Click on **Contact** to access the contact form with social media links
+   - Click on **Categories** or **Archive** to see "Under Construction" pages
+   - Try resizing your browser to see the responsive navigation menu
 
 ### Stopping the Application
 
@@ -171,41 +189,104 @@ java -jar target/blog-1.0.0.jar
 
 ## Features
 
-### Current Features (v1.0.0)
+### Current Features (v2.0.0)
+- **Multi-page Navigation:** Complete navigation bar with 5 pages
+- **Fixed Navigation Bar:** Stays at top while scrolling with active page indicator
+- **Responsive Mobile Menu:** Hamburger menu with smooth slide-in animation
+- **Home Page:** Blog post display with modern card design
+- **About Page:** Author information with background, skills, and interests
+- **Contact Page:** 
+  - Fully functional contact form with validation
+  - Social media links (GitHub, LinkedIn, Twitter, Email)
+  - Success message animation
+  - Form fields: Name, Email, Subject, Message
+- **Categories Page:** "Under Construction" placeholder with animated icon
+- **Archive Page:** "Under Construction" placeholder with animated icon
 - Modern, responsive UI with Vue3.js
-- Centered blog post layout with proper spacing
 - Beautiful gradient background design
-- Smooth animations and hover effects
+- Smooth animations and hover effects throughout
 - Mobile-responsive design (320px+)
 - Semantic HTML5 structure
 - Clean, readable typography
+- Consistent design across all pages
 
 ### UI Design Details
-- **Layout:** Centered with max-width of 800px
-- **Spacing:** 20px minimum padding on left and right
+- **Navigation Bar:**
+  - Fixed position with semi-transparent white background
+  - Backdrop blur effect for modern look
+  - Active page highlighting with gradient underline
+  - Smooth hover animations
+  - Mobile hamburger menu (≤768px)
+- **Layout:** Centered with max-width of 800px (700px for contact form)
+- **Spacing:** Consistent padding across all pages
 - **Background:** Purple gradient (from #667eea to #764ba2)
 - **Card Design:** White background with rounded corners and shadow effects
 - **Typography:** System fonts with excellent readability (line-height: 1.8)
+- **Interactive Elements:**
+  - Form inputs with focus states
+  - Buttons with hover and active states
+  - Social links with transform effects
+  - Bouncing animations on construction icons
 - **Responsive Breakpoints:** 
-  - Desktop: Full featured (>768px)
-  - Tablet: Adjusted padding and font sizes (≤768px)
+  - Desktop: Full navigation bar (>768px)
+  - Tablet: Hamburger menu, adjusted layouts (481px - 768px)
   - Mobile: Optimized for small screens (≤480px)
+
+## Available Pages
+
+The blog application includes the following pages:
+
+| Route | Page | Description | Status |
+|-------|------|-------------|--------|
+| `/` | Home | Main blog page with blog posts | ✅ Complete |
+| `/about` | About | Information about the blog author, background, and skills | ✅ Complete |
+| `/contact` | Contact | Contact form with validation and social media links | ✅ Complete |
+| `/categories` | Categories | Browse posts by category | 🚧 Under Construction |
+| `/archive` | Archive | Chronological archive of all posts | 🚧 Under Construction |
+
+All pages feature:
+- Consistent navigation bar
+- Responsive design
+- Mobile hamburger menu
+- Active page highlighting
+- Beautiful gradient background
+- Smooth animations
 
 ## Future Enhancements
 
 Planned features for future versions:
+
+### Backend Development
 - Database integration (PostgreSQL/MySQL)
 - Blog post model and repository
 - REST API endpoints for blog posts
 - CRUD operations for blog posts
 - User authentication and authorization
-- Multiple blog posts with Vue Router for navigation
-- Blog post listing and detail pages
+- Contact form backend integration (email sending)
+- File upload for blog images
+
+### Frontend Features
+- Complete Categories page with category filtering
+- Complete Archive page with chronological post listing
+- Multiple blog posts with pagination
+- Individual blog post detail pages
 - Markdown support for blog content
-- Search functionality
-- Comments system
+- Rich text editor for blog writing
+- Search functionality across all posts
+- Comments system with moderation
+- Dark mode toggle
+- RSS feed
+
+### Advanced Features
 - Vuex/Pinia state management
+- Vue Router for client-side navigation
 - Admin dashboard for content management
+- Analytics and visitor tracking
+- SEO optimization
+- Social media sharing buttons
+- Newsletter subscription
+- Tags and categories system
+- Related posts suggestions
 
 <!-- ## License
 
