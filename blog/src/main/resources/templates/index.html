@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -283,81 +283,57 @@
         }
     </style>
 </head>
-<body id="app">
+<body>
     <!-- Navigation Bar -->
     <nav class="navbar">
         <div class="nav-container">
             <a href="/" class="nav-brand">My Blog</a>
-            <div class="hamburger" @click="toggleMenu" :class="{ active: isMenuOpen }">
+            <div class="hamburger" onclick="toggleMenu()">
                 <span></span>
                 <span></span>
                 <span></span>
             </div>
-            <ul class="nav-links" :class="{ active: isMenuOpen }">
-                <li><a href="/" class="active" @click="closeMenu">Home</a></li>
-                <li><a href="/about" @click="closeMenu">About</a></li>
-                <li><a href="/categories" @click="closeMenu">Categories</a></li>
-                <li><a href="/archive" @click="closeMenu">Archive</a></li>
-                <li><a href="/contact" @click="closeMenu">Contact</a></li>
+            <ul class="nav-links" id="navLinks">
+                <li><a href="/" class="active">Home</a></li>
+                <li><a href="/about">About</a></li>
+                <li><a href="/categories">Categories</a></li>
+                <li><a href="/archive">Archive</a></li>
+                <li><a href="/contact">Contact</a></li>
             </ul>
         </div>
     </nav>
 
     <!-- Main Content -->
-    <main>
-        <div class="container">
-            <article class="blog-post" v-if="blogPost">
-                <h1>{{ blogPost.title }}</h1>
-                <div class="blog-meta">
-                    <span>{{ blogPost.date }}</span> · <span>{{ blogPost.author }}</span>
-                </div>
-                <div class="blog-content">
-                    <p v-for="(paragraph, index) in blogPost.content" :key="index">
-                        {{ paragraph }}
-                    </p>
-                </div>
-            </article>
-            <div v-else class="loading">
-                Loading...
+    <main class="container">
+        <!-- Display message if no posts -->
+        <div th:if="${#lists.isEmpty(posts)}" class="blog-post">
+            <h1>No Posts Yet</h1>
+            <div class="blog-content">
+                <p>Check back soon for new content!</p>
             </div>
         </div>
+        
+        <!-- Loop through all posts -->
+        <article th:each="post : ${posts}" class="blog-post">
+            <h1 th:text="${post.title}">Post Title</h1>
+            <div class="blog-meta">
+                <span th:text="${#temporals.format(post.createdAt, 'MMMM dd, yyyy')}">Date</span> · 
+                <span th:text="${post.author}">Author Name</span>
+            </div>
+            <div class="blog-content">
+                <p th:text="${post.content}">Post content goes here...</p>
+            </div>
+        </article>
     </main>
 
-    <!-- Vue 3 from CDN -->
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    
+    <!-- Hamburger menu toggle script -->
     <script>
-        const { createApp } = Vue;
-
-        createApp({
-            data() {
-                return {
-                    isMenuOpen: false,
-                    blogPost: {
-                        title: 'Welcome to My Blog',
-                        author: 'Blog Author',
-                        date: 'November 14, 2025',
-                        content: [
-                            'Welcome to my personal blog! This is a space where I share my thoughts, experiences, and insights on various topics that interest me. Whether you\'re here to learn something new or just browsing, I hope you find the content engaging and valuable.',
-                            'This blog is built using Spring Boot for the backend and Vue.js 3 for the frontend, demonstrating how modern web technologies can work together seamlessly. The combination of these powerful frameworks allows for creating responsive, dynamic, and maintainable web applications.',
-                            'In future posts, I\'ll be diving deeper into software development, web technologies, best practices, and sharing tutorials that can help both beginners and experienced developers. Stay tuned for more exciting content!',
-                            'Thank you for visiting, and I look forward to sharing this journey with you. Feel free to explore, and don\'t hesitate to reach out if you have any questions or suggestions for future topics.'
-                        ]
-                    }
-                };
-            },
-            methods: {
-                toggleMenu() {
-                    this.isMenuOpen = !this.isMenuOpen;
-                },
-                closeMenu() {
-                    this.isMenuOpen = false;
-                }
-            },
-            mounted() {
-                console.log('Vue app mounted successfully!');
-            }
-        }).mount('#app');
+        function toggleMenu() {
+            const navLinks = document.getElementById('navLinks');
+            const hamburger = document.querySelector('.hamburger');
+            navLinks.classList.toggle('active');
+            hamburger.classList.toggle('active');
+        }
     </script>
 </body>
 </html>
