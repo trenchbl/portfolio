@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: blog-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: blogdb
+      MYSQL_USER: bloguser
+      MYSQL_PASSWORD: blogpass
+    ports:
+      - "3306:3306"
+    volumes:
+      - blog-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  blog-mysql-data:
+    driver: local
+

@@ -105,7 +105,7 @@ blog/
 6. **Explore the site:**
    - Click on **About** to see author information and background
    - Click on **Contact** to access the contact form with social media links
-   - Click on **Categories** or **Archive** to see "Under Construction" pages
+   - **Categories** and **Archive** are to be developed. For the time being they show an "Under Construction" message.
    - Try resizing your browser to see the responsive navigation menu
 
 ### Method 2: Using an IDE
@@ -154,6 +154,84 @@ The application is configured via `src/main/resources/application.properties`:
 - **Application Name:** blog
 
 You can modify these settings in the `application.properties` file if needed.
+
+## Database Setup (MySQL with Docker)
+
+This project includes a `docker-compose.yml` file for running MySQL database locally as a Docker container.
+
+### Prerequisites
+- Docker Desktop installed and running
+- Download from: [Docker Desktop](https://www.docker.com/products/docker-desktop)
+
+### Starting the MySQL Database
+
+**Start the MySQL container:**
+```bash
+docker-compose up -d
+```
+
+**Verify the container is running:**
+```bash
+docker-compose ps
+```
+
+**View logs:**
+```bash
+docker-compose logs -f mysql
+```
+
+Wait until you see "mysqld: ready for connections" in the logs.
+
+### Database Configuration
+
+The MySQL container is configured with:
+- **Database Name:** `blogdb`
+- **Username:** `bloguser`
+- **Password:** `blogpass`
+- **Root Password:** `rootpassword`
+- **Port:** `3306` (mapped to host)
+- **Data Persistence:** Stored in `blog-mysql-data` volume
+
+### Stopping the Database
+
+**Stop the container:**
+```bash
+docker-compose down
+```
+
+**Stop and remove volumes (⚠️ WARNING: This deletes all data):**
+```bash
+docker-compose down -v
+```
+
+### Connecting to MySQL
+
+**Using MySQL client inside container:**
+```bash
+docker exec -it blog-mysql mysql -u bloguser -p
+```
+Enter password: `blogpass`
+
+**Using MySQL Workbench or other GUI tools:**
+- **Hostname:** `127.0.0.1` or `localhost`
+- **Port:** `3306`
+- **Username:** `bloguser`
+- **Password:** `blogpass`
+- **Database:** `blogdb`
+
+### Additional Docker Commands
+
+**Restart the container:**
+```bash
+docker-compose restart
+```
+
+**View real-time logs:**
+```bash
+docker-compose logs -f
+```
+
+For more detailed instructions, see `004-step-by-step-mysql-docker-image.txt`.
 
 ## Building the Project
 

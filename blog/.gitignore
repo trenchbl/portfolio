@@ -2,6 +2,7 @@
 001-step-by-step-init
 002-step-by-step-ui-init.txt
 003-step-by-step-ui-nav-bar.txt
+004-step-by-step-ui-footer.txt
 
 # Build artifacts
 target/
