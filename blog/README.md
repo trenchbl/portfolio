@@ -26,8 +26,9 @@ This is a blogging website application built using Spring Boot, Java, Spring Dat
 - **JavaScript** - Client-side interactivity
 
 ### Infrastructure
-- **Docker** - Container platform for running MySQL
-- **Docker Compose** - Multi-container orchestration
+- **Docker** - Container platform for running MySQL and Blog application
+- **Docker Compose** - Multi-container orchestration for complete stack deployment
+- **Multi-stage Docker Build** - Optimized container images for production
 
 ## Prerequisites
 
@@ -92,14 +93,67 @@ blog/
 │   │           ├── contact.html                      # Contact page with form
 │   │           ├── categories.html                   # Categories page (Under Construction)
 │   │           └── archive.html                      # Archive page (Under Construction)
-├── docker-compose.yml                                # Docker Compose for MySQL
+├── Dockerfile                                        # Multi-stage Docker build configuration
+├── .dockerignore                                     # Docker build exclusions
+├── docker-compose.yml                                # Docker Compose for complete stack (MySQL + App)
 ├── pom.xml                                           # Maven configuration with dependencies
 └── README.md                                         # This file
 ```
 
 ## How to Run the Project
 
-### Method 1: Using Maven (Recommended)
+### Method 1: Using Docker Compose (Recommended for Production & Easy Setup)
+
+This is the easiest and most reliable method. Docker Compose will automatically build the application, start MySQL, and connect everything together.
+
+1. **Ensure Docker Desktop is running**
+   - Verify with: `docker --version`
+
+2. **Build and start all services** (MySQL + Blog Application):
+   ```bash
+   docker-compose up --build
+   ```
+   
+   Or run in detached mode (background):
+   ```bash
+   docker-compose up --build -d
+   ```
+
+3. **Wait for services to start.** You should see:
+   - MySQL container starting and becoming healthy
+   - Blog application building from source
+   - Liquibase migrations executing
+   - "Started BlogApplication" message
+
+4. **Open your web browser** and navigate to:
+   ```
+   http://localhost:8080
+   ```
+
+5. **You should see** the blog home page with:
+   - Fixed navigation bar at the top with links to: Home, About, Categories, Archive, Contact
+   - Responsive hamburger menu on mobile devices
+   - Purple gradient background (#667eea to #764ba2)
+   - Three blog posts from the database
+   - Author (John Doe) and creation date for each post
+   - Smooth animations and hover effects
+
+6. **View application logs** (if running in detached mode):
+   ```bash
+   docker-compose logs -f blog-app
+   ```
+
+7. **Stop all services:**
+   ```bash
+   docker-compose down
+   ```
+   
+   **Stop and remove volumes** (⚠️ WARNING: This deletes all data):
+   ```bash
+   docker-compose down -v
+   ```
+
+### Method 2: Using Maven (For Development)
 
 1. **Start the MySQL database** (required before running the application):
    ```bash
@@ -129,7 +183,7 @@ blog/
    - Fixed navigation bar at the top with links to: Home, About, Categories, Archive, Contact
    - Responsive hamburger menu on mobile devices
    - Purple gradient background (#667eea to #764ba2)
-   - **Three blog posts from the database:**
+   - Three blog posts from the database:
      - "Welcome to My Blog"
      - "Getting Started with Spring Boot"
      - "Database Versioning with Liquibase"
@@ -142,7 +196,7 @@ blog/
    - **Categories** and **Archive** are to be developed. For the time being they show an "Under Construction" message.
    - Try resizing your browser to see the responsive navigation menu
 
-### Method 2: Using an IDE
+### Method 3: Using an IDE (For Development)
 
 1. **Start the MySQL database first:**
    ```bash
@@ -173,7 +227,7 @@ blog/
    - Fixed navigation bar at the top with links to: Home, About, Categories, Archive, Contact
    - Responsive hamburger menu on mobile devices
    - Purple gradient background (#667eea to #764ba2)
-   - **Three blog posts from the database** (newest first)
+   - Three blog posts from the database (newest first)
    - Author and date metadata for each post
    - Smooth animations and hover effects
    
@@ -215,32 +269,85 @@ The application is configured via `src/main/resources/application.properties`:
 
 You can modify these settings in the `application.properties` file if needed.
 
-## Database Setup (MySQL with Docker)
+## Docker Deployment
 
-This project includes a `docker-compose.yml` file for running MySQL database locally as a Docker container.
+This project is fully containerized using Docker and Docker Compose for easy deployment and scalability.
+
+### Docker Compose Stack
+
+The `docker-compose.yml` file defines a complete application stack with:
+
+1. **MySQL Database Service** (`mysql`)
+   - Image: `mysql:8.0`
+   - Container name: `blog-mysql`
+   - Port: `3306` (mapped to host)
+   - Data persistence via Docker volume
+   - Health checks to ensure database is ready
+   - Auto-restart policy
+
+2. **Blog Application Service** (`blog-app`)
+   - Built from source using multi-stage Dockerfile
+   - Container name: `blog-app`
+   - Port: `8080` (mapped to host)
+   - Depends on MySQL (waits for health check)
+   - Environment variables for database connection
+   - Auto-restart policy
+
+3. **Docker Network** (`blog-network`)
+   - Private bridge network for service communication
+   - Allows containers to communicate by service name
+   - Isolated from host network for security
 
 ### Prerequisites
 - Docker Desktop installed and running
 - Download from: [Docker Desktop](https://www.docker.com/products/docker-desktop)
 
-### Starting the MySQL Database
+### Quick Start with Docker Compose
 
-**Start the MySQL container:**
+**Start the entire stack:**
 ```bash
-docker-compose up -d
+docker-compose up --build
 ```
 
-**Verify the container is running:**
+**Run in background (detached mode):**
 ```bash
-docker-compose ps
+docker-compose up --build -d
 ```
 
 **View logs:**
 ```bash
+# All services
+docker-compose logs -f
+
+# Specific service
+docker-compose logs -f blog-app
 docker-compose logs -f mysql
 ```
 
-Wait until you see "mysqld: ready for connections" in the logs.
+**Check service status:**
+```bash
+docker-compose ps
+```
+
+**Stop all services:**
+```bash
+docker-compose down
+```
+
+**Stop and remove all data:**
+```bash
+docker-compose down -v
+```
+
+**Restart services:**
+```bash
+docker-compose restart
+```
+
+**Rebuild after code changes:**
+```bash
+docker-compose up --build
+```
 
 ### Database Configuration
 
@@ -252,21 +359,9 @@ The MySQL container is configured with:
 - **Port:** `3306` (mapped to host)
 - **Data Persistence:** Stored in `blog-mysql-data` volume
 
-### Stopping the Database
-
-**Stop the container:**
-```bash
-docker-compose down
-```
-
-**Stop and remove volumes (⚠️ WARNING: This deletes all data):**
-```bash
-docker-compose down -v
-```
-
 ### Connecting to MySQL
 
-**Using MySQL client inside container:**
+**From the host machine:**
 ```bash
 docker exec -it blog-mysql mysql -u bloguser -p
 ```
@@ -279,19 +374,57 @@ Enter password: `blogpass`
 - **Password:** `blogpass`
 - **Database:** `blogdb`
 
-### Additional Docker Commands
+**From within the blog-app container:**
+- **Hostname:** `mysql` (service name in Docker network)
+- **Port:** `3306`
+- **Username:** `bloguser`
+- **Password:** `blogpass`
+- **Database:** `blogdb`
 
-**Restart the container:**
-```bash
-docker-compose restart
-```
+### Docker Environment Variables
 
-**View real-time logs:**
-```bash
-docker-compose logs -f
-```
+The blog application container accepts the following environment variables:
 
-For more detailed instructions, see `004-step-by-step-mysql-docker-image.txt`.
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SPRING_DATASOURCE_URL` | JDBC connection URL | `jdbc:mysql://mysql:3306/blogdb...` |
+| `SPRING_DATASOURCE_USERNAME` | Database username | `bloguser` |
+| `SPRING_DATASOURCE_PASSWORD` | Database password | `blogpass` |
+| `SERVER_PORT` | Application port | `8080` |
+| `SPRING_PROFILES_ACTIVE` | Active Spring profiles | (none) |
+
+These can be modified in `docker-compose.yml` or overridden at runtime.
+
+### Production Deployment
+
+For production deployment, consider:
+
+1. **Use environment-specific configurations:**
+   ```bash
+   docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+   ```
+
+2. **Set secure passwords:**
+   - Never use default passwords in production
+   - Use Docker secrets or environment variables from secure sources
+
+3. **Enable SSL/TLS:**
+   - Configure MySQL with SSL certificates
+   - Use HTTPS for the application (reverse proxy like Nginx)
+
+4. **Resource limits:**
+   - Set memory and CPU limits in docker-compose.yml
+   - Monitor container resource usage
+
+5. **Logging and monitoring:**
+   - Configure centralized logging (ELK stack, Splunk, etc.)
+   - Use monitoring tools (Prometheus, Grafana, etc.)
+
+6. **Backup strategy:**
+   - Regular database backups
+   - Backup Docker volumes
+   - Test restore procedures
+
 
 ## Database Schema & Liquibase
 
@@ -386,6 +519,8 @@ For more detailed information, see `005-step-by-step-blog-post-db-table.txt`.
 
 ## Building the Project
 
+### Building with Maven
+
 To build the project without running it:
 
 ```bash
@@ -397,6 +532,61 @@ This will create a JAR file in the `target/` directory that can be run independe
 ```bash
 java -jar target/blog-1.0.0.jar
 ```
+
+### Building Docker Image
+
+The application includes a multi-stage Dockerfile that builds the application from source and creates an optimized production-ready container.
+
+**Build the Docker image:**
+```bash
+docker build -t blog-app:latest .
+```
+
+**Run the container** (requires MySQL running separately):
+```bash
+docker run -p 8080:8080 \
+  -e SPRING_DATASOURCE_URL=jdbc:mysql://host.docker.internal:3306/blogdb?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true \
+  -e SPRING_DATASOURCE_USERNAME=bloguser \
+  -e SPRING_DATASOURCE_PASSWORD=blogpass \
+  blog-app:latest
+```
+
+**View running containers:**
+```bash
+docker ps
+```
+
+**View container logs:**
+```bash
+docker logs -f blog-app
+```
+
+**Stop the container:**
+```bash
+docker stop blog-app
+```
+
+### Docker Image Details
+
+The Dockerfile uses a multi-stage build approach for optimal performance:
+
+**Stage 1: Build Stage**
+- Uses `maven:3.9-eclipse-temurin-17` image
+- Downloads dependencies (cached for faster rebuilds)
+- Compiles the application and creates JAR file
+
+**Stage 2: Runtime Stage**
+- Uses lightweight `eclipse-temurin:17-jre-alpine` image
+- Only includes the JRE (not full JDK) for smaller image size
+- Runs as non-root user for security
+- Includes health checks for container orchestration
+- Final image size: ~200-250MB (vs ~700MB+ with full JDK)
+
+**Security Features:**
+- ✅ Non-root user execution
+- ✅ Minimal base image (Alpine Linux)
+- ✅ No unnecessary build tools in production image
+- ✅ Multi-stage build separates build and runtime environments
 
 ## Troubleshooting
 
@@ -458,8 +648,9 @@ java -jar target/blog-1.0.0.jar
 
 **Solutions:**
 - Ensure Docker Desktop is running
-- Check Docker logs: `docker logs blog-mysql`
-- Remove and recreate container: `docker-compose down && docker-compose up -d`
+- Check Docker logs: `docker logs blog-mysql` or `docker logs blog-app`
+- Remove and recreate container: `docker-compose down && docker-compose up --build`
+- Check for port conflicts: `netstat -an | findstr "8080 3306"`
 
 **Problem:** Permission denied accessing Docker
 
@@ -467,14 +658,46 @@ java -jar target/blog-1.0.0.jar
 - Ensure Docker Desktop is running with proper permissions
 - On Windows, run command prompt/PowerShell as Administrator if needed
 
+**Problem:** Blog application can't connect to MySQL in Docker
+
+**Solutions:**
+- Verify MySQL is healthy: `docker-compose ps`
+- Check MySQL logs: `docker-compose logs mysql`
+- Ensure services are on the same network: `docker network ls`
+- Verify environment variables in docker-compose.yml
+- Wait longer for MySQL initialization (especially first run)
+
+**Problem:** Docker build fails
+
+**Solutions:**
+- Ensure you have enough disk space
+- Clear Docker build cache: `docker builder prune`
+- Check for network issues during dependency download
+- Verify JDK 17 is specified correctly in Dockerfile
+
+**Problem:** Changes not reflected after rebuild
+
+**Solution:**
+- Force rebuild without cache: `docker-compose build --no-cache blog-app`
+- Remove old containers and volumes: `docker-compose down -v && docker-compose up --build`
+
 ## Features
 
-### Current Features (v3.0.0)
+### Current Features (v4.0.0)
+- **Docker Containerization:** 
+  - Multi-stage Dockerfile for optimized builds
+  - Docker Compose for complete stack deployment
+  - Automated container orchestration
+  - Health checks and dependency management
+  - Production-ready container images
+  - Non-root user execution for security
+  - Isolated Docker network for services
 - **Database Integration:** 
   - MySQL database for persistent storage
   - Spring Data JPA for data access
   - Dynamic blog post loading from database
   - Three sample blog posts pre-loaded
+  - Persistent data storage with Docker volumes
 - **Database Versioning:**
   - Liquibase for schema version control
   - Automated database migrations
@@ -555,9 +778,9 @@ All pages feature:
 Planned features for future versions:
 
 ### Backend Development
-- ✅ ~~Database integration (MySQL)~~ **[COMPLETED in v3.0.0]**
-- ✅ ~~Blog post model and repository~~ **[COMPLETED in v3.0.0]**
-- ✅ ~~Liquibase database versioning~~ **[COMPLETED in v3.0.0]**
+- ✅ Database integration (MySQL) 
+- ✅ Blog post model and repository 
+- ✅ Liquibase database versioning 
 - REST API endpoints for blog posts
 - CRUD operations for blog posts (Create, Update, Delete)
 - Admin panel for managing blog posts
@@ -566,6 +789,7 @@ Planned features for future versions:
 - File upload for blog images
 - Image storage and optimization
 
+<!-- 
 ### Frontend Features
 - Complete Categories page with category filtering
 - Complete Archive page with chronological post listing
@@ -598,6 +822,7 @@ Planned features for future versions:
 - Post scheduling (publish at future date)
 - Draft posts functionality
 - Post versioning and revision history
+-->
 
 <!-- ## License
 
