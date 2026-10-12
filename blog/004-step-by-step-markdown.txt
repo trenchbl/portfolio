@@ -1,0 +1,596 @@
+STEP 004 - MARKDOWN CONTENT
+===========================
+
+
+1. GOAL
+-------
+At the end of this step you will have:
+- Post content written in Markdown and rendered to HTML on the post page:
+  headings, emphasis, lists, quotes, code blocks, tables, strikethrough,
+  and automatic links
+- Rendering that is safe by design: raw HTML in a post is shown as text,
+  and javascript: links are removed
+- Styles for rendered Markdown
+- A sample post that shows every supported feature
+- Unit tests for the renderer, including the security cases
+
+
+2. CONCEPTS
+-----------
+Why commonmark-java
+  CommonMark is the standard specification of Markdown, and commonmark-java
+  is its reference implementation for Java: small, fast, without other
+  dependencies, and extended through modules. GitHub-style tables and
+  strikethrough are separate extensions, so the project only includes what
+  it uses.
+
+Where rendering happens
+  The database stores the Markdown source, which step 005's editor needs.
+  The service renders it to HTML when a post is read, and puts the result
+  in PostDetail.contentHtml. Rendering a post takes well under a
+  millisecond, so it is not cached. If that ever changes, the HTML could be
+  stored in its own column when a post is saved.
+
+th:utext and why it is safe here
+  th:text escapes everything, which is what you want almost everywhere.
+  Rendered Markdown is HTML that must reach the browser as HTML, so the
+  post page uses th:utext ("unescaped text") for contentHtml, and only
+  there. That is only safe because the renderer guarantees two things:
+  - escapeHtml(true): any HTML typed into the Markdown, such as <script>
+    or <img onerror=...>, comes out as visible text, not as tags.
+  - sanitizeUrls(true): links and images may only use safe schemes (http,
+    https, mailto, data). A link to javascript:alert(1) gets an empty URL.
+  Even if a post is written by an attacker, for example through a stolen
+  admin account, it cannot run scripts in visitors' browsers. The renderer
+  tests check exactly this.
+
+  Rule of thumb: never pass anything to th:utext that has not been through
+  this renderer.
+
+rel="nofollow"
+  sanitizeUrls also adds rel="nofollow" to every link, which tells search
+  engines not to trust it. That fits comments from strangers. Posts are
+  written by the blog's own authors, though, and nofollow would also mark
+  links between your own posts as untrusted. An attribute provider removes
+  it from links. The URL sanitizing stays in place.
+
+Headings
+  The post title is the page's <h1>. Inside posts, start headings at ##
+  (h2) so each page has exactly one <h1>, which matters for screen readers
+  and search engines.
+
+
+3. INSTRUCTIONS
+---------------
+
+3.1 Add the dependencies
+
+  In pom.xml, add a version property next to java.version:
+
+    <properties>
+        <java.version>21</java.version>
+        <commonmark.version>0.30.1</commonmark.version>
+    </properties>
+
+  Add the dependencies after spring-boot-starter-webmvc:
+
+    <dependency>
+        <groupId>org.commonmark</groupId>
+        <artifactId>commonmark</artifactId>
+        <version>${commonmark.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>org.commonmark</groupId>
+        <artifactId>commonmark-ext-gfm-tables</artifactId>
+        <version>${commonmark.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>org.commonmark</groupId>
+        <artifactId>commonmark-ext-gfm-strikethrough</artifactId>
+        <version>${commonmark.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>org.commonmark</groupId>
+        <artifactId>commonmark-ext-autolink</artifactId>
+        <version>${commonmark.version}</version>
+    </dependency>
+
+  Spring Boot manages the versions of its own dependencies, but not
+  commonmark's, so the version is given here. A single property keeps the
+  four modules on the same version.
+
+
+3.2 The renderer
+
+  Create blog/src/main/java/com/blog/markdown/MarkdownRenderer.java:
+
+    package com.blog.markdown;
+
+    import org.commonmark.Extension;
+    import org.commonmark.ext.autolink.AutolinkExtension;
+    import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension;
+    import org.commonmark.ext.gfm.tables.TablesExtension;
+    import org.commonmark.node.Link;
+    import org.commonmark.parser.Parser;
+    import org.commonmark.renderer.html.HtmlRenderer;
+    import org.springframework.stereotype.Component;
+
+    import java.util.List;
+
+    /**
+     * Turns Markdown into HTML that is safe to insert into a page unescaped:
+     * raw HTML in the input is escaped, and links or images with unsafe
+     * schemes such as {@code javascript:} lose their URL.
+     */
+    @Component
+    public class MarkdownRenderer {
+
+        private static final List<Extension> EXTENSIONS = List.of(
+                TablesExtension.create(),
+                StrikethroughExtension.create(),
+                AutolinkExtension.create());
+
+        private final Parser parser = Parser.builder()
+                .extensions(EXTENSIONS)
+                .build();
+
+        private final HtmlRenderer renderer = HtmlRenderer.builder()
+                .extensions(EXTENSIONS)
+                .escapeHtml(true)
+                .sanitizeUrls(true)
+                // sanitizeUrls also marks every link rel="nofollow", which suits untrusted
+                // content such as comments, but posts are written by the blog's own authors
+                .attributeProviderFactory(context -> (node, tagName, attributes) -> {
+                    if (node instanceof Link) {
+                        attributes.remove("rel");
+                    }
+                })
+                .build();
+
+        public String toHtml(String markdown) {
+            return renderer.render(parser.parse(markdown));
+        }
+    }
+
+  Notes:
+  - It lives in its own package (com.blog.markdown) because it knows
+    nothing about posts. Step 005's preview, or comments later, can reuse
+    it.
+  - Parser and HtmlRenderer are thread-safe once built, so one instance of
+    each serves all requests. As a Spring @Component, there is only one
+    MarkdownRenderer in the application.
+  - The extensions must be registered on both the parser (to recognise
+    the syntax) and the renderer (to output the HTML).
+
+
+3.3 Render in the service
+
+  Replace blog/src/main/java/com/blog/post/PostDetail.java. The from(...)
+  method is gone, because building a PostDetail now needs the renderer:
+
+    package com.blog.post;
+
+    import java.time.LocalDateTime;
+
+    /**
+     * @param contentHtml the post content rendered from Markdown; safe to output unescaped
+     */
+    public record PostDetail(String title, String slug, String summary, String contentHtml, LocalDateTime publishedAt) {
+    }
+
+  In PostService.java, add the import:
+
+    import com.blog.markdown.MarkdownRenderer;
+
+  Inject the renderer next to the repository:
+
+        private final PostRepository postRepository;
+        private final MarkdownRenderer markdownRenderer;
+
+        PostService(PostRepository postRepository, MarkdownRenderer markdownRenderer) {
+            this.postRepository = postRepository;
+            this.markdownRenderer = markdownRenderer;
+        }
+
+  Replace findPublishedBySlug and add toDetail below it:
+
+        public PostDetail findPublishedBySlug(String slug) {
+            return postRepository.findBySlugAndPublishedAtIsNotNull(slug)
+                    .map(this::toDetail)
+                    .orElseThrow(() -> new PostNotFoundException(slug));
+        }
+
+        private PostDetail toDetail(Post post) {
+            return new PostDetail(
+                    post.getTitle(),
+                    post.getSlug(),
+                    post.getSummary(),
+                    markdownRenderer.toHtml(post.getContent()),
+                    post.getPublishedAt());
+        }
+
+
+3.4 Template
+
+  In templates/post.html, change the content line from th:text to th:utext:
+
+        <div class="prose post__content" th:utext="${post.contentHtml}">Content</div>
+
+  The title and summary keep th:text. They are plain text and must stay
+  escaped.
+
+
+3.5 Styles
+
+  In static/css/main.css, the white-space: pre-line from step 003 is no
+  longer needed, because Markdown now creates real paragraphs. Replace the
+  .post__content rule and add the Markdown styles after it:
+
+    .post__content {
+        margin-bottom: 2rem;
+    }
+
+    /* Rendered Markdown */
+
+    .prose h2,
+    .prose h3,
+    .prose h4 {
+        margin: 2rem 0 0.75rem;
+        line-height: 1.3;
+    }
+
+    .prose ul,
+    .prose ol,
+    .prose blockquote,
+    .prose pre,
+    .prose table {
+        margin: 0 0 1rem;
+    }
+
+    .prose li + li {
+        margin-top: 0.25rem;
+    }
+
+    .prose blockquote {
+        padding: 0.25rem 1rem;
+        border-left: 4px solid var(--color-accent);
+        color: var(--color-muted);
+    }
+
+    .prose blockquote p:last-child {
+        margin-bottom: 0;
+    }
+
+    .prose code {
+        font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+        font-size: 0.9em;
+        padding: 0.1em 0.35em;
+        border-radius: 4px;
+        background: #eef0f4;
+    }
+
+    .prose pre {
+        overflow-x: auto;
+        padding: 1rem;
+        border-radius: var(--radius);
+        background: #1f2937;
+        color: #f9fafb;
+    }
+
+    .prose pre code {
+        padding: 0;
+        background: none;
+        color: inherit;
+    }
+
+    .prose img {
+        max-width: 100%;
+        height: auto;
+    }
+
+    .prose table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .prose th,
+    .prose td {
+        padding: 0.5rem 0.75rem;
+        border: 1px solid var(--color-border);
+        text-align: left;
+    }
+
+    .prose th {
+        background: var(--color-background);
+    }
+
+  Styling through the .prose container means the HTML from the renderer
+  needs no classes. overflow-x: auto on code blocks lets long lines scroll
+  instead of breaking the layout on phones.
+
+  The existing sample posts are plain text with blank lines between
+  paragraphs, which is already valid Markdown, so they need no changes.
+
+
+3.6 A Markdown sample post
+
+  Create blog/src/main/resources/db/changelog/changes/005-insert-markdown-sample-post.xml.
+  The content is in a CDATA section, so Markdown characters like < and &
+  do not need XML escaping. Keep the Markdown lines at the start of the
+  line inside CDATA, because indentation is part of the content (four
+  spaces would turn a line into a code block).
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <databaseChangeLog
+            xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+        <changeSet id="005-insert-markdown-sample-post" author="blog" contextFilter="dev">
+            <insert tableName="posts">
+                <column name="title" value="Writing posts in Markdown"/>
+                <column name="slug" value="writing-posts-in-markdown"/>
+                <column name="summary" value="A tour of the Markdown features this blog supports."/>
+                <column name="content"><![CDATA[Posts are written in **Markdown** and rendered to HTML when the page is shown.
+
+    ## Text
+
+    You can use *emphasis*, **bold**, ~~strikethrough~~, and `inline code`. Plain URLs such as https://commonmark.org become links automatically, and so do [named links](https://spring.io).
+
+    > Blockquotes are useful for quoting documentation or other people.
+
+    ## Lists
+
+    1. Ordered lists
+    2. are numbered
+       - and can contain
+       - nested lists
+
+    ## Code
+
+    ```java
+    @GetMapping("/posts/{slug}")
+    String post(@PathVariable String slug, Model model) {
+        model.addAttribute("post", postService.findPublishedBySlug(slug));
+        return "post";
+    }
+    ```
+
+    ## Tables
+
+    | Feature       | Syntax          |
+    |---------------|-----------------|
+    | Bold          | `**text**`      |
+    | Strikethrough | `~~text~~`      |
+    | Link          | `[text](url)`   |
+
+    ## Safety
+
+    Raw HTML is shown as text instead of being run, so this is harmless: <script>alert('hi')</script>]]></column>
+                <column name="published_at" valueDate="2026-10-05T10:00:00"/>
+                <column name="created_at" valueDate="2026-10-05T10:00:00"/>
+                <column name="updated_at" valueDate="2026-10-05T10:00:00"/>
+            </insert>
+        </changeSet>
+
+    </databaseChangeLog>
+
+  IMPORTANT: in this guide the CDATA lines are indented by four spaces like
+  all other code. In the real file, every line between <![CDATA[ and ]]>
+  must start at column 0. Only the two list items "- and can contain" and
+  "- nested lists" keep three spaces, and the code inside the java block
+  keeps its own indentation.
+
+  Register it in db.changelog-master.xml:
+
+        <include file="changes/005-insert-markdown-sample-post.xml" relativeToChangelogFile="true"/>
+
+  Tip: stop the running app before you create a changeset. If DevTools
+  restarts it while the file is half-written, Liquibase runs the unfinished
+  version, and you get the checksum error described in step 003.
+
+
+3.7 Renderer tests
+
+  Create blog/src/test/java/com/blog/markdown/MarkdownRendererTest.java:
+
+    package com.blog.markdown;
+
+    import org.junit.jupiter.api.Test;
+
+    import static org.assertj.core.api.Assertions.assertThat;
+
+    class MarkdownRendererTest {
+
+        private final MarkdownRenderer renderer = new MarkdownRenderer();
+
+        @Test
+        void rendersParagraphsAndEmphasis() {
+            assertThat(renderer.toHtml("First **bold** paragraph.\n\nSecond *one*."))
+                    .isEqualTo("<p>First <strong>bold</strong> paragraph.</p>\n<p>Second <em>one</em>.</p>\n");
+        }
+
+        @Test
+        void rendersHeadingsListsAndCode() {
+            String html = renderer.toHtml("""
+                    ## Heading
+
+                    - one
+                    - two
+
+                    ```java
+                    var x = 1;
+                    ```
+                    """);
+
+            assertThat(html)
+                    .contains("<h2>Heading</h2>")
+                    .contains("<ul>\n<li>one</li>\n<li>two</li>\n</ul>")
+                    .contains("<pre><code class=\"language-java\">var x = 1;\n</code></pre>");
+        }
+
+        @Test
+        void rendersGithubFlavouredExtensions() {
+            String html = renderer.toHtml("""
+                    | A | B |
+                    |---|---|
+                    | 1 | 2 |
+
+                    ~~gone~~ and https://example.com
+                    """);
+
+            assertThat(html)
+                    .contains("<table>")
+                    .contains("<td>1</td>")
+                    .contains("<del>gone</del>")
+                    .contains("<a href=\"https://example.com\">https://example.com</a>");
+        }
+
+        @Test
+        void escapesRawHtml() {
+            String html = renderer.toHtml("Hello <script>alert('x')</script> and <b onclick=\"x()\">bold</b>");
+
+            assertThat(html)
+                    .doesNotContain("<script>")
+                    .doesNotContain("<b ")
+                    .contains("&lt;script&gt;");
+        }
+
+        @Test
+        void escapesRawHtmlBlocks() {
+            String html = renderer.toHtml("<div>\n<img src=x onerror=alert(1)>\n</div>");
+
+            assertThat(html)
+                    .doesNotContain("<div>")
+                    .doesNotContain("<img")
+                    .contains("&lt;img");
+        }
+
+        @Test
+        void removesJavascriptLinks() {
+            String html = renderer.toHtml("[click me](javascript:alert(1)) and ![image](javascript:alert(2))");
+
+            assertThat(html).doesNotContainIgnoringCase("javascript:");
+        }
+
+        @Test
+        void keepsSafeLinks() {
+            assertThat(renderer.toHtml("[Spring](https://spring.io) and [mail](mailto:me@example.com)"))
+                    .contains("<a href=\"https://spring.io\">Spring</a>")
+                    .contains("<a href=\"mailto:me@example.com\">mail</a>");
+        }
+    }
+
+  This is a plain JUnit test with no Spring context, because the renderer
+  has no dependencies. All seven tests run in well under a second.
+
+  The Markdown in the text blocks (""") is indented in the Java source.
+  Java removes the common indentation, so the renderer sees lines starting
+  at column 0.
+
+  escapesRawHtml and escapesRawHtmlBlocks cover the two ways HTML can
+  appear in Markdown: inline inside a paragraph, and as a block on its own
+  lines. removesJavascriptLinks covers both links and images.
+  keepsSafeLinks also checks that no rel="nofollow" is added.
+
+
+3.8 Update the service and controller tests
+
+  In PostServiceTest.java, add the import and import the renderer into the
+  test slice:
+
+    import com.blog.markdown.MarkdownRenderer;
+
+    @Import({TestcontainersConfiguration.class, PostService.class, MarkdownRenderer.class})
+
+  Add a test that checks the whole path from database to HTML:
+
+        @Test
+        void rendersContentAsSafeHtml() {
+            Post post = new Post("Markdown", "markdown", null, "Some **bold** text <script>alert(1)</script>");
+            post.publish(LocalDateTime.of(2026, 1, 1, 10, 0));
+            postRepository.save(post);
+
+            assertThat(postService.findPublishedBySlug("markdown").contentHtml())
+                    .contains("<strong>bold</strong>")
+                    .contains("&lt;script&gt;")
+                    .doesNotContain("<script>");
+        }
+
+  In PostControllerTest.java, replace showsPublishedPost and
+  escapesHtmlInContent with these two tests. The first checks that the
+  rendered HTML reaches the page unchanged. The second checks that the
+  title and summary are still escaped:
+
+        @Test
+        void showsPublishedPostWithRenderedContent() throws Exception {
+            given(postService.findPublishedBySlug("hello-world")).willReturn(new PostDetail(
+                    "Hello world", "hello-world", "A summary", "<p>The <strong>full</strong> content.</p>",
+                    LocalDateTime.of(2026, 9, 1, 9, 0)));
+
+            mockMvc.perform(get("/posts/hello-world"))
+                    .andExpect(status().isOk())
+                    .andExpect(view().name("post"))
+                    .andExpect(content().string(containsString("<title>Hello world | Blog</title>")))
+                    .andExpect(content().string(containsString("<p>The <strong>full</strong> content.</p>")));
+        }
+
+        @Test
+        void escapesHtmlInTitleAndSummary() throws Exception {
+            given(postService.findPublishedBySlug("xss")).willReturn(new PostDetail(
+                    "<b>Title</b>", "xss", "<i>Summary</i>", "<p>ok</p>", LocalDateTime.of(2026, 9, 1, 9, 0)));
+
+            mockMvc.perform(get("/posts/xss"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("&lt;b&gt;Title&lt;/b&gt;")))
+                    .andExpect(content().string(containsString("&lt;i&gt;Summary&lt;/i&gt;")));
+        }
+
+  The safety checks now sit where the work is done: the renderer escapes
+  (MarkdownRendererTest), the service uses the renderer
+  (PostServiceTest.rendersContentAsSafeHtml), and the page escapes
+  everything else (escapesHtmlInTitleAndSummary).
+
+
+4. VERIFY
+---------
+  a) Stop the app if it is running, then run the tests:
+
+       .\mvnw verify
+
+     Expected: "Tests run: 28, Failures: 0" and "BUILD SUCCESS".
+
+  b) Run the application:
+
+       .\mvnw spring-boot:run
+
+     Liquibase runs 1 changeset (005). Then open
+     http://localhost:8080/posts/writing-posts-in-markdown. You should see:
+     - section headings, bold, italic, struck-through text, and inline code
+     - https://commonmark.org as a clickable link, without extra syntax
+     - a quote with a coloured bar, a numbered list with a nested list
+     - a dark code block and a table with borders
+     - at the end, the literal text <script>alert('hi')</script>, with no
+       popup
+
+     Older posts such as /posts/package-by-feature still show their two
+     paragraphs.
+
+  c) Optional: confirm in the browser's developer tools (F12, Elements)
+     that the <script> text is escaped (&lt;script&gt;) and that the links
+     have no rel attribute.
+
+  Troubleshooting
+  - The whole sample post shows as one grey code block: the CDATA lines are
+    indented. Markdown treats four leading spaces as code. Since 005 has
+    already run, fix it with a new changeset (an <update> of that row) or,
+    in development, see step 003 for the checksum options.
+  - Tables or ~~strikethrough~~ show as plain text: the extension is missing
+    from the parser or the renderer. It must be registered on both.
+
+
+5. COMMIT
+---------
+  git add -A
+  git commit -m "Step 004: Render post content from Markdown safely"

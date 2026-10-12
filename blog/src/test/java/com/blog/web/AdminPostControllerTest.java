@@ -6,10 +6,14 @@ import com.blog.post.PostForm;
 import com.blog.post.PostNotFoundException;
 import com.blog.post.PostService;
 import com.blog.post.SlugAlreadyUsedException;
+import com.blog.security.SecurityConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageImpl;
+import org.springframework.security.test.context.support.WithAnonymousUser;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -24,6 +28,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -34,6 +39,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
 
 @WebMvcTest(AdminPostController.class)
+@Import(SecurityConfig.class)
+@WithMockUser(roles = "ADMIN")
 class AdminPostControllerTest {
 
     private static final LocalDateTime DATE = LocalDateTime.of(2026, 9, 1, 9, 0);
@@ -71,7 +78,7 @@ class AdminPostControllerTest {
 
     @Test
     void createsPostAndRedirectsWithMessage() throws Exception {
-        mockMvc.perform(post("/admin/posts")
+        mockMvc.perform(post("/admin/posts").with(csrf())
                         .param("title", "Hello")
                         .param("slug", "")
                         .param("content", "Some **Markdown**")
@@ -86,7 +93,7 @@ class AdminPostControllerTest {
 
     @Test
     void showsValidationErrorsAndKeepsTheInput() throws Exception {
-        mockMvc.perform(post("/admin/posts")
+        mockMvc.perform(post("/admin/posts").with(csrf())
                         .param("title", "")
                         .param("slug", "Not A Slug")
                         .param("content", "Content I don't want to lose"))
@@ -104,7 +111,7 @@ class AdminPostControllerTest {
     void showsAnErrorWhenTheSlugIsTaken() throws Exception {
         willThrow(new SlugAlreadyUsedException("taken")).given(postService).create(any());
 
-        mockMvc.perform(post("/admin/posts")
+        mockMvc.perform(post("/admin/posts").with(csrf())
                         .param("title", "Hello")
                         .param("slug", "taken")
                         .param("content", "Content"))
@@ -130,7 +137,7 @@ class AdminPostControllerTest {
 
     @Test
     void updatesPostAndRedirects() throws Exception {
-        mockMvc.perform(post("/admin/posts/7")
+        mockMvc.perform(post("/admin/posts/7").with(csrf())
                         .param("title", "Changed")
                         .param("slug", "changed")
                         .param("content", "Content"))
@@ -142,7 +149,7 @@ class AdminPostControllerTest {
 
     @Test
     void deletesPostAndRedirects() throws Exception {
-        mockMvc.perform(post("/admin/posts/7/delete"))
+        mockMvc.perform(post("/admin/posts/7/delete").with(csrf()))
                 .andExpect(redirectedUrl("/admin/posts"))
                 .andExpect(flash().attribute("message", "Post deleted"));
 
@@ -166,6 +173,45 @@ class AdminPostControllerTest {
                 .andExpect(view().name("post"))
                 .andExpect(content().string(containsString("Preview of a draft")))
                 .andExpect(content().string(containsString("<p>Body</p>")));
+    }
+
+    @Test
+    @WithAnonymousUser
+    void visitorsAreSentToTheLoginPage() throws Exception {
+        mockMvc.perform(get("/admin/posts"))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(redirectedUrl("/login"));
+    }
+
+    @Test
+    @WithAnonymousUser
+    void visitorsCannotDeletePosts() throws Exception {
+        mockMvc.perform(post("/admin/posts/7/delete").with(csrf()))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(redirectedUrl("/login"));
+
+        verify(postService, never()).delete(any());
+    }
+
+    @Test
+    @WithMockUser(roles = "READER")
+    void usersWithoutTheAdminRoleAreForbidden() throws Exception {
+        mockMvc.perform(get("/admin/posts"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void requestsWithoutACsrfTokenAreRejected() throws Exception {
+        mockMvc.perform(post("/admin/posts/7/delete"))
+                .andExpect(status().isForbidden());
+
+        verify(postService, never()).delete(any());
+    }
+
+    @Test
+    void formsContainACsrfToken() throws Exception {
+        mockMvc.perform(get("/admin/posts/new"))
+                .andExpect(content().string(containsString("name=\"_csrf\"")));
     }
 
     @Test

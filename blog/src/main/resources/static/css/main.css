@@ -104,6 +104,19 @@ main.container {
     border-bottom-color: var(--color-accent);
 }
 
+.site-nav__logout .link-button {
+    color: var(--color-muted);
+    text-decoration: none;
+}
+
+.site-nav__logout .link-button:hover {
+    color: var(--color-text);
+}
+
+.container--narrow {
+    max-width: 420px;
+}
+
 /* Footer */
 
 .site-footer {

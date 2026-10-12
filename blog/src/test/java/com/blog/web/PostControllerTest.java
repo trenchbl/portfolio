@@ -3,9 +3,11 @@ package com.blog.web;
 import com.blog.post.PostDetail;
 import com.blog.post.PostNotFoundException;
 import com.blog.post.PostService;
+import com.blog.security.SecurityConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -19,6 +21,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
 
 @WebMvcTest(PostController.class)
+@Import(SecurityConfig.class)
 class PostControllerTest {
 
     @Autowired

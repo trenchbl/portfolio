@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<html lang="en" xmlns:th="http://www.thymeleaf.org" xmlns:sec="http://www.thymeleaf.org/extras/spring-security">
 
 <head th:fragment="head(title)">
     <meta charset="UTF-8">
@@ -16,7 +16,12 @@
         <nav class="site-nav" aria-label="Main">
             <a th:href="@{/}" th:classappend="${active == 'home'} ? 'is-active'">Home</a>
             <a th:href="@{/about}" th:classappend="${active == 'about'} ? 'is-active'">About</a>
-            <a th:href="@{/admin/posts}" th:classappend="${active == 'admin'} ? 'is-active'">Admin</a>
+            <th:block sec:authorize="hasRole('ADMIN')">
+                <a th:href="@{/admin/posts}" th:classappend="${active == 'admin'} ? 'is-active'">Admin</a>
+                <form class="site-nav__logout" method="post" th:action="@{/logout}">
+                    <button type="submit" class="link-button">Log out</button>
+                </form>
+            </th:block>
         </nav>
     </div>
 </header>

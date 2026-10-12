@@ -2,12 +2,15 @@ package com.blog.web;
 
 import com.blog.post.PostService;
 import com.blog.post.PostSummary;
+import com.blog.security.SecurityConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -23,6 +26,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
 
 @WebMvcTest(HomeController.class)
+@Import(SecurityConfig.class)
 class HomeControllerTest {
 
     private static final PostSummary POST = new PostSummary(
@@ -90,6 +94,28 @@ class HomeControllerTest {
     void pageZeroIsNotFound() throws Exception {
         mockMvc.perform(get("/").param("page", "0"))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void visitorsSeeNoAdminLinks() throws Exception {
+        given(postService.findPublished(1)).willReturn(Page.empty());
+
+        mockMvc.perform(get("/"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(not(containsString("href=\"/admin/posts\""))))
+                .andExpect(content().string(not(containsString("Log out"))));
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    void adminsSeeAdminLinkAndLogout() throws Exception {
+        given(postService.findPublished(1)).willReturn(Page.empty());
+
+        mockMvc.perform(get("/"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("href=\"/admin/posts\"")))
+                .andExpect(content().string(containsString("action=\"/logout\"")))
+                .andExpect(content().string(containsString("name=\"_csrf\"")));
     }
 
     @Test
