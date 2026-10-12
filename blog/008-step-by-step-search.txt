@@ -1,0 +1,594 @@
+STEP 008 - SEARCH
+=================
+
+
+1. GOAL
+-------
+At the end of this step you will have:
+- A search box in the header on every page
+- /search?q=... listing published posts whose title or content contains
+  the query, newest first, with the same cards and pagination as the
+  home page
+- Page links that keep the query, so "Older posts" stays on the same
+  search
+- Drafts left out, and % and _ treated as ordinary characters so they
+  cannot match every post
+
+
+2. CONCEPTS
+-----------
+GET, not POST
+  Search does not change data, so it is a GET form. The query lives in
+  the URL (/search?q=mysql), which means you can bookmark it, share it,
+  and go back to it. A POST search would hide the query and break
+  refresh (step 005's Post/Redirect/Get rule is for changes, not for
+  reads).
+
+LIKE, not full-text search
+  MySQL can index words with FULLTEXT, which is the right tool for a
+  large site. This blog is small, so a LIKE '%mysql%' on title and
+  content is enough. It finds parts of words ("container" in
+  "Testcontainers") and needs no extra schema. The cost is a scan of
+  every published post. When that becomes slow, a later changeset can
+  add a FULLTEXT index and switch the query; the URL and the page stay
+  the same.
+
+% and _ are wildcards
+  In LIKE, % means "any text" and _ means "any one character". If the
+  visitor types %, every post would match. SearchQueries escapes both
+  (and the backslash itself) and the JPQL query names \ as the ESCAPE
+  character, so \% means a percent sign. The test that searches for "%"
+  must return only posts that contain that character, not the whole
+  list.
+
+Case
+  lower(title) LIKE lower(pattern) makes "MYSQL" and "mysql" the same.
+  The pattern is lower-cased once in Java, so the database does it only
+  on the columns.
+
+Title and content, not the summary
+  The summary is an optional teaser. Searching it would make a post
+  match because of a sentence the visitor never sees in the body. The
+  title and the body are what the author wrote for reading.
+
+Blank queries skip the database
+  An empty box should show a short prompt, not every post. The service
+  returns Page.empty() without calling the repository, so opening
+  /search is free.
+
+The query on the model
+  SearchController puts the stripped query on the model as "query". The
+  header reads it to refill the box. The pagination fragment reads the
+  same name: when query is set, the page links include q=...; when it
+  is missing (home, categories, admin), the links stay as they were.
+  Thymeleaf fragment parameters are strict about their count, so query
+  is not a third parameter. It comes from the model.
+
+
+3. INSTRUCTIONS
+---------------
+  The running app can stay up: this step does not add a changeset.
+
+3.1 Escape the query
+
+  Create blog/src/main/java/com/blog/post/SearchQueries.java:
+
+    package com.blog.post;
+
+    import java.util.Locale;
+
+    /**
+     * Turns a visitor's search into a LIKE pattern. {@code %} and {@code _}
+     * are escaped, so they are ordinary characters and cannot match every post.
+     */
+    final class SearchQueries {
+
+        static final int MAX_LENGTH = 100;
+
+        private SearchQueries() {
+        }
+
+        /**
+         * {@code "MySQL_8"} becomes {@code "%mysql\\_8%"}. Blank input becomes
+         * empty, so the service can skip the database.
+         */
+        static String likePattern(String query) {
+            String term = normalize(query);
+            if (term.isEmpty()) {
+                return "";
+            }
+            String escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+            return "%" + escaped + "%";
+        }
+
+        static String normalize(String query) {
+            if (query == null) {
+                return "";
+            }
+            String term = query.strip().toLowerCase(Locale.ROOT);
+            if (term.length() > MAX_LENGTH) {
+                return term.substring(0, MAX_LENGTH);
+            }
+            return term;
+        }
+    }
+
+  Queries longer than 100 characters are cut off, matching maxlength on
+  the input. The order of replace matters: escape \ first, or a \%
+  produced for % would have its new backslash escaped again.
+
+3.2 The repository query
+
+  In blog/src/main/java/com/blog/post/PostRepository.java, add the
+  Query and Param imports and this method, after the tag finder:
+
+    /**
+     * {@code pattern} is already lower-case and escaped for LIKE. The
+     * backslash is the escape character, so {@code \%} matches a percent sign.
+     */
+    @Query("""
+            select p from Post p
+            where p.publishedAt is not null
+              and (lower(p.title) like :pattern escape '\\'
+                   or lower(p.content) like :pattern escape '\\')
+            """)
+    Page<Post> searchPublished(@Param("pattern") String pattern, Pageable pageable);
+
+  A derived method name cannot say "escape these wildcards", so this is
+  a @Query. Spring Data builds the COUNT query from the same WHERE, so
+  pagination works. In the text block, '\\' is one backslash in the
+  JPQL that reaches Hibernate.
+
+  Do not use ContainingIgnoreCase: it wraps the string in %...% and
+  leaves % and _ as wildcards.
+
+3.3 The service
+
+  In blog/src/main/java/com/blog/post/PostService.java, after
+  findPublishedByTag:
+
+    /**
+     * Published posts whose title or content contains the query. Blank
+     * queries skip the database and return an empty page.
+     */
+    public Page<PostSummary> searchPublished(String query, int pageNumber) {
+        String pattern = SearchQueries.likePattern(query);
+        if (pattern.isEmpty()) {
+            return Page.empty();
+        }
+        return postRepository.searchPublished(pattern, publicPage(pageNumber)).map(PostSummary::from);
+    }
+
+  publicPage already sorts newest first and uses PAGE_SIZE, so search
+  pages match the home page.
+
+3.4 The controller
+
+  Create blog/src/main/java/com/blog/web/SearchController.java:
+
+    package com.blog.web;
+
+    import com.blog.post.PostService;
+    import org.springframework.stereotype.Controller;
+    import org.springframework.ui.Model;
+    import org.springframework.web.bind.annotation.GetMapping;
+    import org.springframework.web.bind.annotation.RequestParam;
+
+    @Controller
+    class SearchController {
+
+        private final PostService postService;
+
+        SearchController(PostService postService) {
+            this.postService = postService;
+        }
+
+        @GetMapping("/search")
+        String search(@RequestParam(name = "q", defaultValue = "") String query,
+                      @RequestParam(defaultValue = "1") int page, Model model) {
+            PageNumbers.requireValid(page);
+            String term = query.strip();
+            model.addAttribute("query", term);
+            model.addAttribute("posts", PageNumbers.requireExisting(page, postService.searchPublished(term, page)));
+            return "search";
+        }
+    }
+
+  The request parameter is q, not query, so the URL stays short. The
+  model attribute is query, so the header and the pagination fragment
+  can use one name. Page 0 or a page past the end is a 404, as on the
+  other lists. /search is public: it falls under anyRequest().permitAll().
+
+3.5 Templates
+
+  In blog/src/main/resources/templates/fragments/layout.html, add the
+  search form in the header, between the brand and the nav:
+
+    <form class="site-search" method="get" th:action="@{/search}" role="search">
+        <label class="visually-hidden" for="q">Search posts</label>
+        <input type="search" id="q" name="q" maxlength="100" placeholder="Search posts"
+               th:value="${query}">
+        <button type="submit" class="button">Search</button>
+    </form>
+
+  GET forms do not need a CSRF token. role="search" and the visually
+  hidden label describe the box for assistive tools. type="search"
+  gives some browsers a clear button.
+
+  In the same file, change the pagination links so they keep q when
+  the model has query. The fragment still takes two parameters
+  (page, baseUrl):
+
+    <nav th:fragment="pagination(page, baseUrl)" th:if="${page.totalPages > 1}" class="pagination" aria-label="Pagination">
+        <a th:if="${page.hasPrevious()}" rel="prev" class="pagination__link"
+           th:href="${page.number == 1}
+               ? (${query} ? @{${baseUrl}(q=${query})} : @{${baseUrl}})
+               : (${query} ? @{${baseUrl}(page=${page.number}, q=${query})} : @{${baseUrl}(page=${page.number})})">&larr; Newer posts</a>
+        <span class="pagination__status"
+              th:text="|Page ${page.number + 1} of ${page.totalPages}|">Page 1 of 2</span>
+        <a th:if="${page.hasNext()}" rel="next" class="pagination__link"
+           th:href="${query} ? @{${baseUrl}(page=${page.number + 2}, q=${query})} : @{${baseUrl}(page=${page.number + 2})}">Older posts &rarr;</a>
+    </nav>
+
+  Adding query as a third fragment parameter would break every existing
+  call: Thymeleaf requires the declared number of arguments.
+
+  Create blog/src/main/resources/templates/search.html:
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head th:replace="~{fragments/layout :: head(${query.isEmpty() ? 'Search' : 'Search: ' + query})}"></head>
+    <body>
+    <header th:replace="~{fragments/layout :: header('')}"></header>
+
+    <main class="container">
+        <h1 class="page-title" th:text="${query.isEmpty() ? 'Search' : 'Results for ' + query}">Search</h1>
+
+        <p th:if="${query.isEmpty()}" class="empty-state">
+            Type a word in the search box to find published posts by title or content.
+        </p>
+        <p th:if="${!query.isEmpty() && posts.isEmpty()}" class="empty-state">
+            No published posts match that search.
+        </p>
+
+        <th:block th:each="post : ${posts}">
+            <article th:replace="~{fragments/layout :: post-card(${post})}"></article>
+        </th:block>
+
+        <nav th:replace="~{fragments/layout :: pagination(${posts}, '/search')}"></nav>
+
+        <p th:unless="${query.isEmpty()}"><a th:href="@{/}">&larr; All posts</a></p>
+    </main>
+
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+    </body>
+    </html>
+
+  The title expression is one ${...} block. Writing
+  'Search: ' + ${query} inside the fragment argument treats the word
+  query as text, so the tab would read "Search: query".
+  th:text on the heading escapes HTML, so a query of <b>x</b> becomes
+  &lt;b&gt;x&lt;/b&gt; in the page.
+
+3.6 Styles
+
+  In blog/src/main/resources/static/css/main.css, before .site-nav:
+
+    .site-search {
+        display: flex;
+        flex: 1 1 12rem;
+        gap: 0.5rem;
+        max-width: 22rem;
+    }
+
+    .site-search input[type="search"] {
+        flex: 1;
+        min-width: 0;
+        padding: 0.35rem 0.65rem;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        background: var(--color-background);
+        color: inherit;
+        font: inherit;
+    }
+
+    .site-search input[type="search"]:focus {
+        outline: 2px solid var(--color-accent);
+        outline-offset: 1px;
+    }
+
+    .site-search .button {
+        padding: 0.35rem 0.85rem;
+    }
+
+  flex: 1 1 12rem lets the box sit between the brand and the nav and
+  wrap on a narrow window. min-width: 0 stops the input from forcing
+  the header wider than the screen.
+
+3.7 Tests
+
+  blog/src/test/java/com/blog/post/SearchQueriesTest.java:
+
+    package com.blog.post;
+
+    import org.junit.jupiter.api.Test;
+
+    import static org.assertj.core.api.Assertions.assertThat;
+
+    class SearchQueriesTest {
+
+        @Test
+        void wrapsTheTermInPercentSignsAndLowerCasesIt() {
+            assertThat(SearchQueries.likePattern("  MySQL ")).isEqualTo("%mysql%");
+        }
+
+        @Test
+        void escapesLikeWildcardsAndBackslashes() {
+            assertThat(SearchQueries.likePattern("100%_done\\")).isEqualTo("%100\\%\\_done\\\\%");
+        }
+
+        @Test
+        void blankInputIsEmpty() {
+            assertThat(SearchQueries.likePattern("   ")).isEmpty();
+            assertThat(SearchQueries.likePattern(null)).isEmpty();
+            assertThat(SearchQueries.normalize(null)).isEmpty();
+        }
+
+        @Test
+        void longQueriesAreCutToTheLimit() {
+            String tooLong = "a".repeat(SearchQueries.MAX_LENGTH + 20);
+
+            assertThat(SearchQueries.normalize(tooLong)).hasSize(SearchQueries.MAX_LENGTH);
+            assertThat(SearchQueries.likePattern(tooLong))
+                    .isEqualTo("%" + "a".repeat(SearchQueries.MAX_LENGTH) + "%");
+        }
+    }
+
+  In PostServiceTest, add (savePublished is already there):
+
+    @Test
+    void searchFindsPublishedPostsByTitleOrContent() {
+        savePublished("Why MySQL", LocalDateTime.of(2026, 1, 1, 10, 0));
+        Post byContent = new Post("Another topic", "another-topic", null, "Talking about MySQL indexes", general);
+        byContent.publish(LocalDateTime.of(2026, 1, 2, 10, 0));
+        postRepository.save(byContent);
+        postRepository.save(new Post("MySQL draft", "mysql-draft", null, "MySQL", general));
+        savePublished("Unrelated", LocalDateTime.of(2026, 1, 3, 10, 0));
+
+        assertThat(postService.searchPublished("mysql", 1).getContent())
+                .extracting(PostSummary::title)
+                .containsExactly("Another topic", "Why MySQL");
+    }
+
+    @Test
+    void searchIsCaseInsensitiveAndIgnoresDrafts() {
+        savePublished("Liquibase owns the schema", LocalDateTime.of(2026, 1, 1, 10, 0));
+        postRepository.save(new Post("Liquibase notes", "liquibase-notes", null, "draft", general));
+
+        assertThat(postService.searchPublished("LIQUIBASE", 1).getContent())
+                .extracting(PostSummary::title)
+                .containsExactly("Liquibase owns the schema");
+    }
+
+    @Test
+    void searchTreatsPercentAndUnderscoreAsOrdinaryCharacters() {
+        savePublished("100% coverage", LocalDateTime.of(2026, 1, 1, 10, 0));
+        savePublished("Everything else", LocalDateTime.of(2026, 1, 2, 10, 0));
+
+        assertThat(postService.searchPublished("%", 1).getContent())
+                .extracting(PostSummary::title)
+                .containsExactly("100% coverage");
+        assertThat(postService.searchPublished("100_", 1)).isEmpty();
+    }
+
+    @Test
+    void blankSearchDoesNotHitTheDatabase() {
+        savePublished("Anything", LocalDateTime.of(2026, 1, 1, 10, 0));
+
+        assertThat(postService.searchPublished("  ", 1)).isEmpty();
+        assertThat(postService.searchPublished(null, 1)).isEmpty();
+    }
+
+    @Test
+    void searchSplitsMatchesIntoPages() {
+        for (int i = 1; i <= PostService.PAGE_SIZE + 1; i++) {
+            savePublished("Needle " + i, LocalDateTime.of(2026, 1, i, 10, 0));
+        }
+
+        assertThat(postService.searchPublished("needle", 1).getTotalPages()).isEqualTo(2);
+        assertThat(postService.searchPublished("needle", 2).getContent())
+                .extracting(PostSummary::title)
+                .containsExactly("Needle 1");
+    }
+
+  Create blog/src/test/java/com/blog/web/SearchControllerTest.java:
+
+    package com.blog.web;
+
+    import com.blog.post.CategoryLink;
+    import com.blog.post.PostService;
+    import com.blog.post.PostSummary;
+    import com.blog.security.SecurityConfig;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+    import org.springframework.context.annotation.Import;
+    import org.springframework.data.domain.Page;
+    import org.springframework.data.domain.PageImpl;
+    import org.springframework.data.domain.PageRequest;
+    import org.springframework.test.context.bean.override.mockito.MockitoBean;
+    import org.springframework.test.web.servlet.MockMvc;
+
+    import java.time.LocalDateTime;
+    import java.util.List;
+
+    import static org.hamcrest.Matchers.containsString;
+    import static org.hamcrest.Matchers.not;
+    import static org.mockito.BDDMockito.given;
+    import static org.mockito.Mockito.never;
+    import static org.mockito.Mockito.verify;
+    import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
+
+    @WebMvcTest(SearchController.class)
+    @Import(SecurityConfig.class)
+    class SearchControllerTest {
+
+        private static final PostSummary POST = new PostSummary(
+                1L, "Why Liquibase owns the schema", "why-liquibase-owns-the-schema", null,
+                LocalDateTime.of(2026, 9, 15, 18, 30),
+                new CategoryLink("Databases", "databases"), List.of());
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @MockitoBean
+        private PostService postService;
+
+        @Test
+        void emptyQueryShowsAPrompt() throws Exception {
+            given(postService.searchPublished("", 1)).willReturn(Page.empty());
+
+            mockMvc.perform(get("/search"))
+                    .andExpect(status().isOk())
+                    .andExpect(view().name("search"))
+                    .andExpect(content().string(containsString("<title>Search | Blog</title>")))
+                    .andExpect(content().string(containsString("Type a word in the search box")))
+                    .andExpect(content().string(not(containsString("Results for"))));
+        }
+
+        @Test
+        void showsMatchingPostsAndKeepsTheQuery() throws Exception {
+            given(postService.searchPublished("liquibase", 1)).willReturn(pageOf(List.of(POST), 1, 1));
+
+            mockMvc.perform(get("/search").param("q", "liquibase"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("<title>Search: liquibase | Blog</title>")))
+                    .andExpect(content().string(containsString("Results for liquibase")))
+                    .andExpect(content().string(containsString("href=\"/posts/why-liquibase-owns-the-schema\"")))
+                    .andExpect(content().string(containsString("value=\"liquibase\"")));
+        }
+
+        @Test
+        void showsAnEmptyStateWhenNothingMatches() throws Exception {
+            given(postService.searchPublished("xyzzy", 1)).willReturn(Page.empty());
+
+            mockMvc.perform(get("/search").param("q", "xyzzy"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("No published posts match that search.")));
+        }
+
+        @Test
+        void escapesTheQueryInTheHeading() throws Exception {
+            given(postService.searchPublished("<b>x</b>", 1)).willReturn(Page.empty());
+
+            mockMvc.perform(get("/search").param("q", "<b>x</b>"))
+                    .andExpect(content().string(containsString("Results for &lt;b&gt;x&lt;/b&gt;")))
+                    .andExpect(content().string(not(containsString("Results for <b>x</b>"))));
+        }
+
+        @Test
+        void paginationKeepsTheQuery() throws Exception {
+            given(postService.searchPublished("needle", 2)).willReturn(pageOf(List.of(POST), 2, 3));
+
+            mockMvc.perform(get("/search").param("q", "needle").param("page", "2"))
+                    .andExpect(content().string(containsString("Page 2 of 3")))
+                    .andExpect(content().string(containsString("href=\"/search?q=needle\">&larr; Newer posts")))
+                    .andExpect(content().string(containsString("href=\"/search?page=3&amp;q=needle\"")));
+        }
+
+        @Test
+        void pagesThatCannotExistAreNotFound() throws Exception {
+            given(postService.searchPublished("needle", 5)).willReturn(
+                    new PageImpl<>(List.of(), PageRequest.of(4, PostService.PAGE_SIZE), 2L * PostService.PAGE_SIZE));
+
+            mockMvc.perform(get("/search").param("q", "needle").param("page", "0"))
+                    .andExpect(status().isNotFound());
+            mockMvc.perform(get("/search").param("q", "needle").param("page", "5"))
+                    .andExpect(status().isNotFound());
+        }
+
+        @Test
+        void stripsTheQueryBeforeSearching() throws Exception {
+            given(postService.searchPublished("mysql", 1)).willReturn(Page.empty());
+
+            mockMvc.perform(get("/search").param("q", "  mysql  "))
+                    .andExpect(content().string(containsString("value=\"mysql\"")));
+
+            verify(postService).searchPublished("mysql", 1);
+            verify(postService, never()).searchPublished("  mysql  ", 1);
+        }
+
+        private static Page<PostSummary> pageOf(List<PostSummary> posts, int pageNumber, int totalPages) {
+            long totalElements = (long) totalPages * PostService.PAGE_SIZE;
+            return new PageImpl<>(posts, PageRequest.of(pageNumber - 1, PostService.PAGE_SIZE), totalElements);
+        }
+    }
+
+  In HomeControllerTest, add:
+
+    @Test
+    void headerContainsTheSearchBox() throws Exception {
+        given(postService.findPublished(1)).willReturn(Page.empty());
+
+        mockMvc.perform(get("/"))
+                .andExpect(content().string(containsString("action=\"/search\"")))
+                .andExpect(content().string(containsString("name=\"q\"")))
+                .andExpect(content().string(containsString("Search posts")));
+    }
+
+
+4. VERIFY
+---------
+  a) Run the tests:
+
+       .\mvnw verify
+
+     Expected: "Tests run: 144, Failures: 0" and "BUILD SUCCESS".
+
+  b) Run the application (or reload if it is already running):
+
+       .\mvnw spring-boot:run
+
+     Then:
+     1. Open http://localhost:8080. The header has a search box between
+        the brand and Home / About.
+     2. Search for LIQUIBASE. You get /search?q=LIQUIBASE, the heading
+        "Results for LIQUIBASE", the box still says LIQUIBASE, and the
+        Liquibase post is in the list.
+     3. Search for mysql. "Testing with real databases" matches (title
+        or body). Posts that only mention MySQL in a tag or a summary
+        do not.
+     4. Search for xyzzy-no-such. "No published posts match that search."
+     5. Open /search with an empty box. You get the prompt, not the
+        full list.
+     6. Search for % . You do not get every post. On the sample data
+        the list is empty, because no post contains a percent sign.
+     7. Search for the . There are two pages. "Older posts" goes to
+        /search?page=2&q=the, and "Newer posts" on that page goes back
+        to /search?q=the (no page=1).
+     8. Open /search?q=the&page=0 and /search?q=the&page=99. Both are
+        "Page not found".
+
+  Troubleshooting
+  - Searching for % lists every post: the pattern is not escaped, or
+    the JPQL query has no escape '\\'.
+  - The tab title is "Search: query | Blog": the fragment argument uses
+    + ${query} or + query outside a single ${...}. Use
+    ${query.isEmpty() ? 'Search' : 'Search: ' + query}.
+  - "Older posts" drops the query: the pagination fragment was not
+    updated, or the controller does not put query on the model.
+  - Template error "Signature pagination declares 3 parameters": query
+    must not be a fragment parameter. It is a model attribute.
+  - A draft appears in the results: the query is missing
+    publishedAt is not null.
+  - Empty /search lists every post: searchPublished is not returning
+    Page.empty() for a blank pattern.
+
+
+5. COMMIT
+---------
+  git add -A
+  git commit -m "Step 008: Search published posts by title and content"

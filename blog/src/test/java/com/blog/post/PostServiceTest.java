@@ -138,6 +138,61 @@ class PostServiceTest {
     }
 
     @Test
+    void searchFindsPublishedPostsByTitleOrContent() {
+        savePublished("Why MySQL", LocalDateTime.of(2026, 1, 1, 10, 0));
+        Post byContent = new Post("Another topic", "another-topic", null, "Talking about MySQL indexes", general);
+        byContent.publish(LocalDateTime.of(2026, 1, 2, 10, 0));
+        postRepository.save(byContent);
+        postRepository.save(new Post("MySQL draft", "mysql-draft", null, "MySQL", general));
+        savePublished("Unrelated", LocalDateTime.of(2026, 1, 3, 10, 0));
+
+        assertThat(postService.searchPublished("mysql", 1).getContent())
+                .extracting(PostSummary::title)
+                .containsExactly("Another topic", "Why MySQL");
+    }
+
+    @Test
+    void searchIsCaseInsensitiveAndIgnoresDrafts() {
+        savePublished("Liquibase owns the schema", LocalDateTime.of(2026, 1, 1, 10, 0));
+        postRepository.save(new Post("Liquibase notes", "liquibase-notes", null, "draft", general));
+
+        assertThat(postService.searchPublished("LIQUIBASE", 1).getContent())
+                .extracting(PostSummary::title)
+                .containsExactly("Liquibase owns the schema");
+    }
+
+    @Test
+    void searchTreatsPercentAndUnderscoreAsOrdinaryCharacters() {
+        savePublished("100% coverage", LocalDateTime.of(2026, 1, 1, 10, 0));
+        savePublished("Everything else", LocalDateTime.of(2026, 1, 2, 10, 0));
+
+        assertThat(postService.searchPublished("%", 1).getContent())
+                .extracting(PostSummary::title)
+                .containsExactly("100% coverage");
+        assertThat(postService.searchPublished("100_", 1)).isEmpty();
+    }
+
+    @Test
+    void blankSearchDoesNotHitTheDatabase() {
+        savePublished("Anything", LocalDateTime.of(2026, 1, 1, 10, 0));
+
+        assertThat(postService.searchPublished("  ", 1)).isEmpty();
+        assertThat(postService.searchPublished(null, 1)).isEmpty();
+    }
+
+    @Test
+    void searchSplitsMatchesIntoPages() {
+        for (int i = 1; i <= PostService.PAGE_SIZE + 1; i++) {
+            savePublished("Needle " + i, LocalDateTime.of(2026, 1, i, 10, 0));
+        }
+
+        assertThat(postService.searchPublished("needle", 1).getTotalPages()).isEqualTo(2);
+        assertThat(postService.searchPublished("needle", 2).getContent())
+                .extracting(PostSummary::title)
+                .containsExactly("Needle 1");
+    }
+
+    @Test
     void unknownCategoriesAndTagsAreNotFound() {
         assertThatThrownBy(() -> postService.getCategory("nope")).isInstanceOf(CategoryNotFoundException.class);
         assertThatThrownBy(() -> postService.getTag("nope")).isInstanceOf(TagNotFoundException.class);

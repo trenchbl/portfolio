@@ -16,5 +16,6 @@
     <include file="changes/008-add-categories.xml" relativeToChangelogFile="true"/>
     <include file="changes/009-add-tags.xml" relativeToChangelogFile="true"/>
     <include file="changes/010-insert-sample-categories-and-tags.xml" relativeToChangelogFile="true"/>
+    <include file="changes/011-add-post-search-index.xml" relativeToChangelogFile="true"/>
 
 </databaseChangeLog>

@@ -73,6 +73,18 @@ public class PostService {
                 .map(PostSummary::from);
     }
 
+    /**
+     * Published posts whose title or content contains the query. Blank
+     * queries skip the database and return an empty page.
+     */
+    public Page<PostSummary> searchPublished(String query, int pageNumber) {
+        String pattern = SearchQueries.likePattern(query);
+        if (pattern.isEmpty()) {
+            return Page.empty();
+        }
+        return postRepository.searchPublished(pattern, publicPage(pageNumber)).map(PostSummary::from);
+    }
+
     public PostDetail findPublishedBySlug(String slug) {
         return postRepository.findBySlugAndPublishedAtIsNotNull(slug)
                 .map(this::toDetail)

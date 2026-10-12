@@ -131,6 +131,16 @@ class HomeControllerTest {
     }
 
     @Test
+    void headerContainsTheSearchBox() throws Exception {
+        given(postService.findPublished(1)).willReturn(Page.empty());
+
+        mockMvc.perform(get("/"))
+                .andExpect(content().string(containsString("action=\"/search\"")))
+                .andExpect(content().string(containsString("name=\"q\"")))
+                .andExpect(content().string(containsString("Search posts")));
+    }
+
+    @Test
     void aboutPageRenders() throws Exception {
         mockMvc.perform(get("/about"))
                 .andExpect(status().isOk())
