@@ -8,25 +8,26 @@ A server-rendered blogging platform built with Spring Boot and MySQL. Authors wr
 - Markdown posts rendered to safe HTML
 - Admin CRUD for posts and categories (drafts, publish/unpublish, preview)
 - Login with Spring Security (ADMIN role, CSRF, bcrypt password hashes)
-- First admin account created from local configuration when the users table is empty
+- First admin account created from configuration when the users table is empty
 - Schema managed by Liquibase; sample data for local development
+- Production profile, multi-stage Docker image, and `/actuator/health` for probes
 - Tests with JUnit 5, Spring Boot test slices, and Testcontainers (MySQL)
 
 ## Tech stack
 
 - Java 21, Spring Boot 4.1.1, Maven Wrapper
-- Spring MVC, Thymeleaf, Spring Security
+- Spring MVC, Thymeleaf, Spring Security, Spring Boot Actuator
 - Spring Data JPA (Hibernate), MySQL 8.4, Liquibase
 - CommonMark
-- Docker Compose for MySQL
+- Docker / Docker Compose
 
 ## Prerequisites
 
-- Java 21
-- Docker Desktop (for MySQL and for running tests)
+- Java 21 (for local Maven runs)
+- Docker Desktop (for MySQL, full-stack Compose, and tests)
 - Git (optional)
 
-## Start the application
+## Start the application (local Maven)
 
 All commands below are run from the `blog` directory.
 
@@ -36,20 +37,20 @@ All commands below are run from the `blog` directory.
 docker compose up -d
 ```
 
-Wait until the container is healthy (`docker compose ps`). The database credentials match `src/main/resources/application.properties` (`bloguser` / `blogpass`, database `blogdb`, port `3306`).
+This starts only the database (`mysql` service). Wait until it is healthy (`docker compose ps`). Default credentials match `src/main/resources/application.properties` (`bloguser` / `blogpass`, database `blogdb`, port `3306`).
 
-If another MySQL is already using port 3306, stop it first or change the published port in `compose.yaml`.
+If another MySQL already uses port 3306, stop it first or change the published port in `compose.yaml`.
 
 ### 2. Configure the first admin (once)
 
-Create `application-local.properties` next to `pom.xml` (this file is gitignored):
+Create `application-local.properties` next to `pom.xml` (gitignored):
 
 ```properties
 blog.admin.username=admin
 blog.admin.password=choose-a-password-at-least-12-characters
 ```
 
-On the first start with an empty `users` table, the app creates that admin and stores a bcrypt hash. Afterwards you can remove the password from the file; changing the file alone does not update an existing account.
+On the first start with an empty `users` table, the app creates that admin and stores a bcrypt hash. Changing the file later does not update an existing account.
 
 ### 3. Run the app
 
@@ -65,9 +66,9 @@ macOS / Linux:
 ./mvnw spring-boot:run
 ```
 
-Open [http://localhost:8080](http://localhost:8080). Admin pages are at [http://localhost:8080/admin/posts](http://localhost:8080/admin/posts) (login required).
+Open [http://localhost:8080](http://localhost:8080). Health: [http://localhost:8080/actuator/health](http://localhost:8080/actuator/health). Admin: [http://localhost:8080/admin/posts](http://localhost:8080/admin/posts).
 
-Stop the app with `Ctrl+C`.
+Stop with `Ctrl+C`.
 
 ### 4. Stop MySQL (optional)
 
@@ -75,7 +76,34 @@ Stop the app with `Ctrl+C`.
 docker compose down
 ```
 
-Data is kept in the `blog-mysql-data` volume. To remove the data as well: `docker compose down -v`.
+Data stays in the `blog-mysql-data` volume. Remove data with `docker compose down -v`.
+
+## Full stack with Docker
+
+Build and run the app container together with MySQL (production-like: `prod` profile, no sample Liquibase context on a fresh database):
+
+1. Copy `.env.example` to `.env` and set passwords (`BLOG_ADMIN_PASSWORD` must be at least 12 characters).
+2. Start:
+
+```bash
+docker compose --profile app up --build
+```
+
+3. Open [http://localhost:8080](http://localhost:8080). When `blog-app` is healthy, `/actuator/health` returns `{"status":"UP"}`.
+
+Stop the app container (keep MySQL):
+
+```bash
+docker compose --profile app stop app
+```
+
+Stop everything:
+
+```bash
+docker compose --profile app down
+```
+
+Do not commit `.env`. Secrets come from environment variables (`SPRING_DATASOURCE_*`, `BLOG_ADMIN_*`).
 
 ## Tests
 
@@ -95,11 +123,14 @@ or
 
 ```
 blog/
-├── compose.yaml                 # MySQL 8.4 for local development
+├── Dockerfile                   # Multi-stage build (JDK → JRE)
+├── compose.yaml                 # MySQL always; app behind Compose profile "app"
+├── .env.example                 # Template for Compose secrets
 ├── application-local.properties # Local secrets (gitignored; you create this)
 ├── src/main/java/com/blog/      # Application code
 ├── src/main/resources/
 │   ├── application.properties
+│   ├── application-prod.properties
 │   ├── db/changelog/            # Liquibase migrations
 │   ├── templates/               # Thymeleaf pages
 │   └── static/css/
@@ -109,5 +140,5 @@ blog/
 
 ## Notes
 
-- Liquibase uses the `dev` context in the default profile, so sample posts, categories, and tags are loaded for local development.
-- Implementation notes that walk through how the app was built live in [`implementation-notes/`](./implementation-notes/).
+- Default profile uses Liquibase context `dev` (sample posts). Profile `prod` sets an empty context so sample inserts do not run on a new database.
+- Implementation notes: [`implementation-notes/`](./implementation-notes/).

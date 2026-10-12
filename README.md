@@ -16,12 +16,12 @@ A server-rendered blogging platform with Markdown posts, categories and tags, se
 - Public post list, detail pages, categories, tags, and search
 - Admin CRUD for posts and categories (drafts and publishing)
 - Spring Security login (ADMIN role, CSRF, bcrypt)
-- Liquibase migrations and MySQL via Docker Compose
+- Liquibase migrations, Actuator health, Docker image and Compose full stack
 
 **Technologies:**
 - Java 21, Spring Boot 4.1.1, Maven
 - MySQL 8.4, Liquibase, Spring Data JPA
-- Thymeleaf, Spring Security, CommonMark
+- Thymeleaf, Spring Security, Actuator, CommonMark
 - Docker Compose, Testcontainers
 
 [Setup and run →](./blog/README.md)

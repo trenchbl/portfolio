@@ -15,6 +15,8 @@ public class SecurityConfig {
         http
                 .authorizeHttpRequests(requests -> requests
                         .requestMatchers("/admin/**").hasRole("ADMIN")
+                        // Health checks must work without a login (Docker, load balancers)
+                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                         .anyRequest().permitAll())
                 .formLogin(form -> form
                         .loginPage("/login")
