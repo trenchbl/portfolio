@@ -1,6 +1,7 @@
 package com.blog.post;
 
 import com.blog.TestcontainersConfiguration;
+import com.blog.markdown.MarkdownRenderer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -14,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @DataJpaTest
-@Import({TestcontainersConfiguration.class, PostService.class})
+@Import({TestcontainersConfiguration.class, PostService.class, MarkdownRenderer.class})
 @ActiveProfiles("test")
 class PostServiceTest {
 
@@ -56,6 +57,18 @@ class PostServiceTest {
         savePublished("Hello world", LocalDateTime.of(2026, 1, 1, 10, 0));
 
         assertThat(postService.findPublishedBySlug("hello-world").title()).isEqualTo("Hello world");
+    }
+
+    @Test
+    void rendersContentAsSafeHtml() {
+        Post post = new Post("Markdown", "markdown", null, "Some **bold** text <script>alert(1)</script>");
+        post.publish(LocalDateTime.of(2026, 1, 1, 10, 0));
+        postRepository.save(post);
+
+        assertThat(postService.findPublishedBySlug("markdown").contentHtml())
+                .contains("<strong>bold</strong>")
+                .contains("&lt;script&gt;")
+                .doesNotContain("<script>");
     }
 
     @Test

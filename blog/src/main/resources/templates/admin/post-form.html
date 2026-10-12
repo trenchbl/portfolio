@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head(${postId} ? 'Edit post' : 'New post')}"></head>
+<body>
+<header th:replace="~{fragments/layout :: header('admin')}"></header>
+
+<main class="container">
+    <h1 class="page-title" th:text="${postId} ? 'Edit post' : 'New post'">New post</h1>
+
+    <form class="form" method="post" th:object="${post}"
+          th:action="${postId} ? @{/admin/posts/{id}(id=${postId})} : @{/admin/posts}">
+
+        <p th:if="${#fields.hasErrors('*')}" class="form__summary" role="alert">
+            Please correct the highlighted fields.
+        </p>
+
+        <div class="form__field">
+            <label for="title">Title</label>
+            <input type="text" th:field="*{title}" maxlength="200" required
+                   th:errorclass="is-invalid" aria-describedby="title-error">
+            <p th:if="${#fields.hasErrors('title')}" th:errors="*{title}" id="title-error" class="form__error">Error</p>
+        </div>
+
+        <div class="form__field">
+            <label for="slug">Slug</label>
+            <input type="text" th:field="*{slug}" maxlength="200" pattern="[a-z0-9]+(-[a-z0-9]+)*"
+                   th:errorclass="is-invalid" aria-describedby="slug-help slug-error">
+            <p id="slug-help" class="form__help">
+                The address of the post: /posts/<em>slug</em>. Leave empty to create it from the title.
+            </p>
+            <p th:if="${#fields.hasErrors('slug')}" th:errors="*{slug}" id="slug-error" class="form__error">Error</p>
+        </div>
+
+        <div class="form__field">
+            <label for="summary">Summary <span class="form__optional">(optional)</span></label>
+            <textarea th:field="*{summary}" rows="2" maxlength="500"
+                      th:errorclass="is-invalid" aria-describedby="summary-error"></textarea>
+            <p th:if="${#fields.hasErrors('summary')}" th:errors="*{summary}" id="summary-error" class="form__error">Error</p>
+        </div>
+
+        <div class="form__field">
+            <label for="content">Content</label>
+            <textarea th:field="*{content}" rows="18" class="form__code" required
+                      th:errorclass="is-invalid" aria-describedby="content-help content-error"></textarea>
+            <p id="content-help" class="form__help">Markdown. Start headings at ## because the title is the main heading.</p>
+            <p th:if="${#fields.hasErrors('content')}" th:errors="*{content}" id="content-error" class="form__error">Error</p>
+        </div>
+
+        <div class="form__field form__field--checkbox">
+            <input type="checkbox" th:field="*{published}">
+            <label th:for="${#ids.prev('published')}">Published</label>
+        </div>
+
+        <div class="form__actions">
+            <button type="submit" class="button">Save</button>
+            <a th:if="${postId}" th:href="@{/admin/posts/{id}/preview(id=${postId})}">Preview</a>
+            <a th:href="@{/admin/posts}">Cancel</a>
+        </div>
+    </form>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>

@@ -28,30 +28,32 @@ class PostControllerTest {
     private PostService postService;
 
     @Test
-    void showsPublishedPost() throws Exception {
+    void showsPublishedPostWithRenderedContent() throws Exception {
         given(postService.findPublishedBySlug("hello-world")).willReturn(new PostDetail(
-                "Hello world", "hello-world", "A summary", "The full content.", LocalDateTime.of(2026, 9, 1, 9, 0)));
+                "Hello world", "hello-world", "A summary", "<p>The <strong>full</strong> content.</p>",
+                LocalDateTime.of(2026, 9, 1, 9, 0)));
 
         mockMvc.perform(get("/posts/hello-world"))
                 .andExpect(status().isOk())
                 .andExpect(view().name("post"))
                 .andExpect(content().string(containsString("<title>Hello world | Blog</title>")))
-                .andExpect(content().string(containsString("The full content.")));
+                .andExpect(content().string(containsString("<p>The <strong>full</strong> content.</p>")));
     }
 
     @Test
-    void escapesHtmlInContent() throws Exception {
+    void escapesHtmlInTitleAndSummary() throws Exception {
         given(postService.findPublishedBySlug("xss")).willReturn(new PostDetail(
-                "XSS", "xss", null, "<script>alert(1)</script>", LocalDateTime.of(2026, 9, 1, 9, 0)));
+                "<b>Title</b>", "xss", "<i>Summary</i>", "<p>ok</p>", LocalDateTime.of(2026, 9, 1, 9, 0)));
 
         mockMvc.perform(get("/posts/xss"))
                 .andExpect(status().isOk())
-                .andExpect(content().string(containsString("&lt;script&gt;alert(1)&lt;/script&gt;")));
+                .andExpect(content().string(containsString("&lt;b&gt;Title&lt;/b&gt;")))
+                .andExpect(content().string(containsString("&lt;i&gt;Summary&lt;/i&gt;")));
     }
 
     @Test
     void unknownPostIsNotFound() throws Exception {
-        given(postService.findPublishedBySlug("missing")).willThrow(new PostNotFoundException("missing"));
+        given(postService.findPublishedBySlug("missing")).willThrow(PostNotFoundException.forSlug("missing"));
 
         mockMvc.perform(get("/posts/missing"))
                 .andExpect(status().isNotFound());

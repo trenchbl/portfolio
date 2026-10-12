@@ -28,7 +28,7 @@ public class Post {
     @Column(length = 500)
     private String summary;
 
-    @Column(nullable = false, columnDefinition = "TEXT")
+    @Column(nullable = false, columnDefinition = "MEDIUMTEXT")
     private String content;
 
     private LocalDateTime publishedAt;
@@ -51,8 +51,19 @@ public class Post {
         this.content = content;
     }
 
+    public void update(String title, String slug, String summary, String content) {
+        this.title = title;
+        this.slug = slug;
+        this.summary = summary;
+        this.content = content;
+    }
+
     public void publish(LocalDateTime publishedAt) {
         this.publishedAt = publishedAt;
+    }
+
+    public void unpublish() {
+        this.publishedAt = null;
     }
 
     public boolean isPublished() {

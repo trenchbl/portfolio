@@ -16,9 +16,12 @@
         <nav class="site-nav" aria-label="Main">
             <a th:href="@{/}" th:classappend="${active == 'home'} ? 'is-active'">Home</a>
             <a th:href="@{/about}" th:classappend="${active == 'about'} ? 'is-active'">About</a>
+            <a th:href="@{/admin/posts}" th:classappend="${active == 'admin'} ? 'is-active'">Admin</a>
         </nav>
     </div>
 </header>
+
+<p th:fragment="flash" th:if="${message}" class="flash" role="status" th:text="${message}">Saved</p>
 
 <nav th:fragment="pagination(page, baseUrl)" th:if="${page.totalPages > 1}" class="pagination" aria-label="Pagination">
     <a th:if="${page.hasPrevious()}" rel="prev" class="pagination__link"

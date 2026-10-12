@@ -11,4 +11,8 @@ interface PostRepository extends JpaRepository<Post, Long> {
     Page<Post> findByPublishedAtIsNotNull(Pageable pageable);
 
     Optional<Post> findBySlugAndPublishedAtIsNotNull(String slug);
+
+    boolean existsBySlug(String slug);
+
+    boolean existsBySlugAndIdNot(String slug, Long id);
 }

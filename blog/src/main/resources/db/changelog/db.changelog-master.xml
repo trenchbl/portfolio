@@ -10,5 +10,7 @@
     <include file="changes/002-insert-sample-posts.xml" relativeToChangelogFile="true"/>
     <include file="changes/003-add-post-slug.xml" relativeToChangelogFile="true"/>
     <include file="changes/004-insert-more-sample-posts.xml" relativeToChangelogFile="true"/>
+    <include file="changes/005-insert-markdown-sample-post.xml" relativeToChangelogFile="true"/>
+    <include file="changes/006-widen-post-content.xml" relativeToChangelogFile="true"/>
 
 </databaseChangeLog>

@@ -2,23 +2,29 @@
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head th:replace="~{fragments/layout :: head(${post.title})}"></head>
 <body>
-<header th:replace="~{fragments/layout :: header('')}"></header>
+<header th:replace="~{fragments/layout :: header(${preview} ? 'admin' : '')}"></header>
 
 <main class="container">
+    <p th:if="${preview}" class="preview-banner"
+       th:text="${post.publishedAt} ? 'Preview of a published post.' : 'Preview of a draft. Visitors cannot see this post yet.'">
+        Preview of a draft.
+    </p>
+
     <article class="post">
         <header class="post__header">
             <h1 class="page-title" th:text="${post.title}">Post title</h1>
-            <time class="post__date"
+            <time class="post__date" th:if="${post.publishedAt}"
                   th:datetime="${#temporals.formatISO(post.publishedAt)}"
                   th:text="${#temporals.format(post.publishedAt, 'd MMMM yyyy')}">1 January 2026</time>
         </header>
 
         <p class="post__summary" th:if="${post.summary}" th:text="${post.summary}">Summary</p>
 
-        <div class="prose post__content" th:text="${post.content}">Content</div>
+        <div class="prose post__content" th:utext="${post.contentHtml}">Content</div>
     </article>
 
-    <p><a th:href="@{/}">&larr; All posts</a></p>
+    <p th:unless="${preview}"><a th:href="@{/}">&larr; All posts</a></p>
+    <p th:if="${preview}"><a th:href="@{/admin/posts}">&larr; Back to admin</a></p>
 </main>
 
 <footer th:replace="~{fragments/layout :: footer}"></footer>
