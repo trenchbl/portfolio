@@ -3,34 +3,32 @@
         xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
-        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
-    <changeSet id="001-create-blog-posts-table" author="blog-developer">
-        <createTable tableName="blog_posts">
+    <changeSet id="001-create-posts-table" author="blog">
+        <createTable tableName="posts">
             <column name="id" type="BIGINT" autoIncrement="true">
                 <constraints primaryKey="true" nullable="false"/>
             </column>
-            <column name="title" type="VARCHAR(255)">
+            <column name="title" type="VARCHAR(200)">
                 <constraints nullable="false"/>
             </column>
-            <column name="author" type="VARCHAR(100)">
-                <constraints nullable="false"/>
-            </column>
+            <column name="summary" type="VARCHAR(500)"/>
             <column name="content" type="TEXT">
                 <constraints nullable="false"/>
             </column>
-            <column name="created_at" type="TIMESTAMP" defaultValueComputed="CURRENT_TIMESTAMP">
+            <column name="published_at" type="DATETIME(6)"/>
+            <column name="created_at" type="DATETIME(6)">
                 <constraints nullable="false"/>
             </column>
-            <column name="updated_at" type="TIMESTAMP" defaultValueComputed="CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP">
+            <column name="updated_at" type="DATETIME(6)">
                 <constraints nullable="false"/>
             </column>
         </createTable>
-        
-        <rollback>
-            <dropTable tableName="blog_posts"/>
-        </rollback>
+
+        <createIndex tableName="posts" indexName="idx_posts_published_at">
+            <column name="published_at"/>
+        </createIndex>
     </changeSet>
 
 </databaseChangeLog>
-

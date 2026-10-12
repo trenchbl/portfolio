@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <changeSet id="002-insert-sample-posts" author="blog" contextFilter="dev">
+        <insert tableName="posts">
+            <column name="title" value="Welcome to the blog"/>
+            <column name="summary" value="What this blog is about and what to expect from it."/>
+            <column name="content" value="This blog is where I write about backend development, databases, and the things I learn while building software."/>
+            <column name="published_at" valueDate="2026-09-01T09:00:00"/>
+            <column name="created_at" valueDate="2026-09-01T09:00:00"/>
+            <column name="updated_at" valueDate="2026-09-01T09:00:00"/>
+        </insert>
+        <insert tableName="posts">
+            <column name="title" value="Why Liquibase owns the schema"/>
+            <column name="summary" value="Versioned migrations instead of letting Hibernate create tables."/>
+            <column name="content" value="Every table and column in this project is created by a Liquibase changeset. Hibernate only validates that the entities match the database."/>
+            <column name="published_at" valueDate="2026-09-15T18:30:00"/>
+            <column name="created_at" valueDate="2026-09-15T18:30:00"/>
+            <column name="updated_at" valueDate="2026-09-15T18:30:00"/>
+        </insert>
+        <insert tableName="posts">
+            <column name="title" value="Testing with real databases"/>
+            <column name="summary" value="Using Testcontainers to run tests against the same MySQL version as production."/>
+            <column name="content" value="An in-memory database behaves differently from MySQL. Testcontainers starts a real MySQL in Docker for each test run."/>
+            <column name="published_at" valueDate="2026-10-01T12:00:00"/>
+            <column name="created_at" valueDate="2026-10-01T12:00:00"/>
+            <column name="updated_at" valueDate="2026-10-01T12:00:00"/>
+        </insert>
+        <insert tableName="posts">
+            <column name="title" value="An unfinished draft"/>
+            <column name="summary" value="This post has no publish date, so it must not appear on the home page."/>
+            <column name="content" value="Drafts are posts without a publish date."/>
+            <column name="created_at" valueDate="2026-10-10T08:00:00"/>
+            <column name="updated_at" valueDate="2026-10-10T08:00:00"/>
+        </insert>
+    </changeSet>
+
+</databaseChangeLog>

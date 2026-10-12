@@ -1,0 +1,342 @@
+STEP 001 - PROJECT SETUP
+========================
+
+
+1. GOAL
+-------
+At the end of this step you will have:
+- A Spring Boot 4.1.1 project in the blog/ folder, built with the Maven Wrapper
+- MySQL 8.4 running in Docker via compose.yaml
+- Spring Boot connected to MySQL, with Liquibase running (no tables yet)
+- A home page at http://localhost:8080 rendered by Thymeleaf
+- A passing test that starts the whole application against a throwaway
+  MySQL container (Testcontainers)
+
+
+2. CONCEPTS
+-----------
+Maven Wrapper (mvnw / mvnw.cmd)
+  The wrapper pins the Maven version inside the repository. Anyone who clones
+  the project runs ./mvnw and gets the same Maven version, with no global
+  install needed. From now on, use ./mvnw instead of mvn.
+
+Spring Boot 4 starters
+  Spring Boot 4 split auto-configuration into smaller modules. In practice:
+  - spring-boot-starter-webmvc replaces the old spring-boot-starter-web
+  - Liquibase needs spring-boot-starter-liquibase (adding liquibase-core on
+    its own no longer turns Liquibase on)
+  - each starter has a matching *-test starter that brings in its test slice
+    (for example spring-boot-starter-webmvc-test provides @WebMvcTest)
+
+Liquibase owns the schema, Hibernate only checks it
+  spring.jpa.hibernate.ddl-auto=validate means Hibernate never creates or
+  alters tables. It only checks at startup that the entities match the
+  tables. Every schema change goes through a Liquibase changeset, so the
+  database history is versioned in git and is the same on every machine.
+
+open-in-view=false
+  By default Spring keeps the database session open while the HTML page is
+  rendered, which hides lazy-loading problems and holds connections for
+  longer. Turning it off makes us load everything a page needs in the
+  service layer, which is the cleaner design.
+
+Two ways to get a database
+  - Running the app (./mvnw spring-boot:run): uses the long-lived MySQL from
+    compose.yaml, so your data survives restarts.
+  - Running tests (./mvnw verify): Testcontainers starts a fresh MySQL for
+    the test run and throws it away afterwards. @ServiceConnection tells
+    Spring Boot to point the datasource at that container automatically.
+
+
+3. INSTRUCTIONS
+---------------
+
+3.1 Generate the project with Spring Initializr
+
+  Run this in PowerShell from the portfolio/ folder. The blog/ folder should
+  contain nothing except these step-by-step .txt files.
+
+    curl.exe -o blog.zip "https://start.spring.io/starter.zip?type=maven-project&language=java&bootVersion=4.1.1&groupId=com.blog&artifactId=blog&name=blog&packageName=com.blog&javaVersion=21&dependencies=web,thymeleaf,data-jpa,mysql,liquibase,validation,devtools,testcontainers"
+    Expand-Archive blog.zip -DestinationPath blog -Force
+    Remove-Item blog.zip
+    Remove-Item blog\HELP.md
+
+  (You can also do the same on https://start.spring.io in the browser and
+  pick these dependencies: Spring Web, Thymeleaf, Spring Data JPA, MySQL
+  Driver, Liquibase Migration, Validation, Spring Boot DevTools,
+  Testcontainers.)
+
+  You now have:
+
+    blog/
+    ├── .mvn/wrapper/maven-wrapper.properties
+    ├── mvnw, mvnw.cmd
+    ├── pom.xml
+    └── src/
+        ├── main/java/com/blog/BlogApplication.java
+        ├── main/resources/application.properties
+        └── test/java/com/blog/
+            ├── BlogApplicationTests.java
+            ├── TestBlogApplication.java
+            └── TestcontainersConfiguration.java
+
+  Open pom.xml and look at the dependencies. You should see the Spring Boot
+  4 starters described in the Concepts section, including
+  spring-boot-starter-webmvc and spring-boot-starter-liquibase. Change the
+  version and add a description:
+
+    <version>0.1.0-SNAPSHOT</version>
+    <name>blog</name>
+    <description>Blog application built with Spring Boot</description>
+
+  Leave the rest of the generated pom.xml as it is.
+
+
+3.2 Run MySQL with Docker Compose
+
+  Create blog/compose.yaml. (compose.yaml is the current default file name;
+  docker-compose.yml still works. The top-level "version:" key is obsolete
+  and is left out.)
+
+    services:
+      mysql:
+        image: mysql:8.4
+        container_name: blog-mysql
+        environment:
+          MYSQL_ROOT_PASSWORD: rootpassword
+          MYSQL_DATABASE: blogdb
+          MYSQL_USER: bloguser
+          MYSQL_PASSWORD: blogpass
+        ports:
+          - "3306:3306"
+        volumes:
+          - blog-mysql-data:/var/lib/mysql
+        healthcheck:
+          test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+          interval: 10s
+          timeout: 5s
+          retries: 10
+
+    volumes:
+      blog-mysql-data:
+
+  These passwords are for local development only. Step 009 moves real
+  credentials into environment variables.
+
+  Note: old containers named blog-mysql (MySQL 8.0) and blog-app, from the
+  previous version of this project, still exist, along with the database
+  volume. Remove them so the new container starts with an empty database:
+
+    docker rm -f blog-mysql blog-app
+    docker volume ls          # look for a volume ending in blog-mysql-data
+    docker volume rm blog_blog-mysql-data
+
+  Start the database:
+
+    cd blog
+    docker compose up -d mysql
+    docker compose ps         # wait until STATUS shows "(healthy)"
+
+
+3.3 Configure the application
+
+  Replace blog/src/main/resources/application.properties with:
+
+    spring.application.name=blog
+
+    # Database (matches compose.yaml)
+    spring.datasource.url=jdbc:mysql://localhost:3306/blogdb
+    spring.datasource.username=bloguser
+    spring.datasource.password=blogpass
+
+    # Liquibase owns the schema; Hibernate only validates it
+    spring.liquibase.change-log=classpath:db/changelog/db.changelog-master.xml
+    spring.jpa.hibernate.ddl-auto=validate
+    spring.jpa.open-in-view=false
+
+    # Show SQL while developing (turned off in the prod profile in step 009)
+    spring.jpa.show-sql=true
+    spring.jpa.properties.hibernate.format_sql=true
+
+  Two settings from the old project are left out on purpose:
+  - hibernate.dialect: Hibernate detects the MySQL version automatically,
+    and setting MySQL8Dialect explicitly is deprecated.
+  - driver-class-name: Spring Boot works it out from the JDBC URL.
+
+
+3.4 Add the Liquibase master changelog
+
+  Create blog/src/main/resources/db/changelog/db.changelog-master.xml:
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <databaseChangeLog
+            xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+        <!-- Each step adds one <include> line here, in order. -->
+
+    </databaseChangeLog>
+
+  With no changesets, Liquibase only creates its own tracking tables
+  (DATABASECHANGELOG and DATABASECHANGELOGLOCK). That is enough to prove the
+  connection and the migration setup work.
+
+
+3.5 Add a home page
+
+  Create blog/src/main/java/com/blog/web/HomeController.java:
+
+    package com.blog.web;
+
+    import org.springframework.stereotype.Controller;
+    import org.springframework.web.bind.annotation.GetMapping;
+
+    @Controller
+    class HomeController {
+
+        @GetMapping("/")
+        String home() {
+            return "home";
+        }
+    }
+
+  The class and method are package-private. Spring does not need them to be
+  public, and keeping them package-private means other packages cannot call
+  the controller directly.
+
+  Create blog/src/main/resources/templates/home.html:
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Blog</title>
+    </head>
+    <body>
+        <h1>Blog</h1>
+        <p>The application is running.</p>
+    </body>
+    </html>
+
+  The design (layout, navigation, CSS) comes in step 002, once there is
+  content to show.
+
+
+3.6 Fix the Testcontainers image version
+
+  Open blog/src/test/java/com/blog/TestcontainersConfiguration.java and change
+  "mysql:latest" to "mysql:8.4", so tests use the same MySQL version as
+  compose.yaml:
+
+    return new MySQLContainer(DockerImageName.parse("mysql:8.4"));
+
+  Leave the other two generated test files as they are:
+  - BlogApplicationTests starts the whole application against the test
+    container. If Liquibase, the datasource, or Hibernate validation is
+    misconfigured, this test fails.
+  - TestBlogApplication is a second main() method that starts the app with
+    a Testcontainers database instead of compose.yaml. You can run it from
+    the IDE when you want a clean database without touching your dev data.
+
+
+3.7 Add a home page test
+
+  Create blog/src/test/java/com/blog/web/HomeControllerTest.java:
+
+    package com.blog.web;
+
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+    import org.springframework.test.web.servlet.MockMvc;
+
+    import static org.hamcrest.Matchers.containsString;
+    import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
+
+    @WebMvcTest(HomeController.class)
+    class HomeControllerTest {
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @Test
+        void homePageRenders() throws Exception {
+            mockMvc.perform(get("/"))
+                    .andExpect(status().isOk())
+                    .andExpect(view().name("home"))
+                    .andExpect(content().string(containsString("The application is running.")));
+        }
+    }
+
+  @WebMvcTest starts only the web layer (controllers and Thymeleaf), with no
+  database, so it runs in about a second. In Spring Boot 4 the annotation
+  lives in org.springframework.boot.webmvc.test.autoconfigure and is
+  provided by spring-boot-starter-webmvc-test.
+
+
+3.8 Clean up the .gitignore
+
+  The generated blog/.gitignore already ignores target/ and IDE folders. Add
+  one line at the end so local override files never get committed:
+
+    application-local.properties
+
+
+4. VERIFY
+---------
+  From the blog/ folder, with Docker Desktop running:
+
+  a) Run the tests:
+
+       .\mvnw verify
+
+     Expected: "Tests run: 2, Failures: 0" and "BUILD SUCCESS". The first
+     run downloads dependencies and the mysql:8.4 image, so it is slower.
+
+  b) Run the application:
+
+       docker compose up -d mysql
+       .\mvnw spring-boot:run
+
+     Expected in the log:
+       - Liquibase: "UPDATE SUMMARY ... Run: 0" (no changesets yet)
+       - "Tomcat started on port 8080"
+       - "Started BlogApplication in X seconds"
+
+     Open http://localhost:8080. You should see "The application is
+     running." Stop the app with Ctrl+C.
+
+  c) Optional: check that Liquibase created its tables:
+
+       docker exec -it blog-mysql mysql -ubloguser -pblogpass blogdb -e "SHOW TABLES;"
+
+     Expected: DATABASECHANGELOG and DATABASECHANGELOGLOCK.
+
+  Troubleshooting
+  - "Bind for 0.0.0.0:3306 failed: port is already allocated": another
+    MySQL is running, probably inventory-manager-mysql. Stop it with
+    docker stop inventory-manager-mysql.
+  - "Port 8080 was already in use": another app (often an older run of this
+    one) is still running. Find it with
+    Get-NetTCPConnection -LocalPort 8080 -State Listen
+    and stop the process with that OwningProcess id.
+  - "Communications link failure" on startup: MySQL is not ready yet. Wait
+    for "(healthy)" in docker compose ps and try again.
+  - Tests fail with "Could not find a valid Docker environment": start
+    Docker Desktop.
+
+
+5. COMMIT
+---------
+  git add -A
+  git commit -m "Step 001: Spring Boot 4 project setup with MySQL, Liquibase, and Testcontainers"
+
+  The old tracked files show as deleted in git status. "git add -A" records
+  those deletions as part of this commit, which is what you want for a fresh
+  start.

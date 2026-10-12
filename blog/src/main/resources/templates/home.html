@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('Home')}"></head>
+<body>
+<header th:replace="~{fragments/layout :: header('home')}"></header>
+
+<main class="container">
+    <h1 class="page-title">Latest posts</h1>
+
+    <p th:if="${posts.isEmpty()}" class="empty-state">No posts have been published yet.</p>
+
+    <article th:each="post : ${posts}" class="post-card">
+        <h2 class="post-card__title">
+            <a th:href="@{/posts/{slug}(slug=${post.slug})}" th:text="${post.title}">Post title</a>
+        </h2>
+        <time class="post-card__date"
+              th:datetime="${#temporals.formatISO(post.publishedAt)}"
+              th:text="${#temporals.format(post.publishedAt, 'd MMMM yyyy')}">1 January 2026</time>
+        <p class="post-card__summary" th:if="${post.summary}" th:text="${post.summary}">Summary</p>
+    </article>
+
+    <nav th:replace="~{fragments/layout :: pagination(${posts}, '/')}"></nav>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>

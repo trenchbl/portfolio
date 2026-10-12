@@ -1,14 +1,35 @@
-# Ignore notes
-001-step-by-step-init
-002-step-by-step-ui-init.txt
-003-step-by-step-ui-nav-bar.txt
-004-step-by-step-mysql-docker-image.txt
-005-step-by-step-blog-post-db-table.txt
-
-# Build artifacts
+HELP.md
 target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
 
-# IDE settings
-.vscode/
-.idea/
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
 *.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+application-local.properties

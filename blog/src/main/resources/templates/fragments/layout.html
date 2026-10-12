@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+
+<head th:fragment="head(title)">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title th:text="${title} + ' | Blog'">Blog</title>
+    <link rel="stylesheet" th:href="@{/css/main.css}">
+</head>
+
+<body>
+
+<header th:fragment="header(active)" class="site-header">
+    <div class="container site-header__inner">
+        <a class="site-header__brand" th:href="@{/}">Blog</a>
+        <nav class="site-nav" aria-label="Main">
+            <a th:href="@{/}" th:classappend="${active == 'home'} ? 'is-active'">Home</a>
+            <a th:href="@{/about}" th:classappend="${active == 'about'} ? 'is-active'">About</a>
+        </nav>
+    </div>
+</header>
+
+<nav th:fragment="pagination(page, baseUrl)" th:if="${page.totalPages > 1}" class="pagination" aria-label="Pagination">
+    <a th:if="${page.hasPrevious()}" rel="prev" class="pagination__link"
+       th:href="${page.number == 1} ? @{${baseUrl}} : @{${baseUrl}(page=${page.number})}">&larr; Newer posts</a>
+    <span class="pagination__status"
+          th:text="|Page ${page.number + 1} of ${page.totalPages}|">Page 1 of 2</span>
+    <a th:if="${page.hasNext()}" rel="next" class="pagination__link"
+       th:href="@{${baseUrl}(page=${page.number + 2})}">Older posts &rarr;</a>
+</nav>
+
+<footer th:fragment="footer" class="site-footer">
+    <div class="container">
+        <p>&copy; <span th:text="${#temporals.year(#temporals.createNow())}">2026</span> Blog</p>
+    </div>
+</footer>
+
+</body>
+</html>

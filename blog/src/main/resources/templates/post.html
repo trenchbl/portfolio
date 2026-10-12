@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head(${post.title})}"></head>
+<body>
+<header th:replace="~{fragments/layout :: header('')}"></header>
+
+<main class="container">
+    <article class="post">
+        <header class="post__header">
+            <h1 class="page-title" th:text="${post.title}">Post title</h1>
+            <time class="post__date"
+                  th:datetime="${#temporals.formatISO(post.publishedAt)}"
+                  th:text="${#temporals.format(post.publishedAt, 'd MMMM yyyy')}">1 January 2026</time>
+        </header>
+
+        <p class="post__summary" th:if="${post.summary}" th:text="${post.summary}">Summary</p>
+
+        <div class="prose post__content" th:text="${post.content}">Content</div>
+    </article>
+
+    <p><a th:href="@{/}">&larr; All posts</a></p>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>
