@@ -32,6 +32,31 @@
         </div>
 
         <div class="form__field">
+            <label for="categoryId">Category</label>
+            <select th:field="*{categoryId}" required th:errorclass="is-invalid" aria-describedby="categoryId-help categoryId-error">
+                <option value="">Choose a category</option>
+                <option th:each="category : ${categories}" th:value="${category.id}" th:text="${category.name}">General</option>
+            </select>
+            <p id="categoryId-help" class="form__help">
+                To add a category, go to <a th:href="@{/admin/categories}">Categories</a>. Unsaved changes here are lost.
+            </p>
+            <p th:if="${#fields.hasErrors('categoryId')}" th:errors="*{categoryId}" id="categoryId-error" class="form__error">Error</p>
+        </div>
+
+        <div class="form__field">
+            <label for="tags">Tags <span class="form__optional">(optional)</span></label>
+            <input type="text" th:field="*{tags}" maxlength="500"
+                   th:errorclass="is-invalid" aria-describedby="tags-help tags-error">
+            <p id="tags-help" class="form__help">
+                Separate tags with commas, for example: spring boot, testing. New tags are created when you save.
+                <th:block th:unless="${#lists.isEmpty(existingTags)}">
+                    Existing tags: <span th:text="${#strings.listJoin(existingTags, ', ')}">java, mysql</span>.
+                </th:block>
+            </p>
+            <p th:if="${#fields.hasErrors('tags')}" th:errors="*{tags}" id="tags-error" class="form__error">Error</p>
+        </div>
+
+        <div class="form__field">
             <label for="summary">Summary <span class="form__optional">(optional)</span></label>
             <textarea th:field="*{summary}" rows="2" maxlength="500"
                       th:errorclass="is-invalid" aria-describedby="summary-error"></textarea>

@@ -1,7 +1,9 @@
 package com.blog.web;
 
+import com.blog.post.CategoryLink;
 import com.blog.post.PostService;
 import com.blog.post.PostSummary;
+import com.blog.post.TagLink;
 import com.blog.security.SecurityConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,7 +32,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class HomeControllerTest {
 
     private static final PostSummary POST = new PostSummary(
-            1L, "First post", "first-post", "A short summary", LocalDateTime.of(2026, 9, 1, 9, 0));
+            1L, "First post", "first-post", "A short summary", LocalDateTime.of(2026, 9, 1, 9, 0),
+            new CategoryLink("Spring", "spring"), List.of(new TagLink("spring boot", "spring-boot")));
 
     @Autowired
     private MockMvc mockMvc;
@@ -49,6 +52,15 @@ class HomeControllerTest {
                 .andExpect(content().string(containsString("A short summary")))
                 .andExpect(content().string(containsString("1 September 2026")))
                 .andExpect(content().string(not(containsString("Page 1 of"))));
+    }
+
+    @Test
+    void postCardsLinkToTheirCategoryAndTags() throws Exception {
+        given(postService.findPublished(1)).willReturn(pageOf(List.of(POST), 1, 1));
+
+        mockMvc.perform(get("/"))
+                .andExpect(content().string(containsString("href=\"/categories/spring\">Spring</a>")))
+                .andExpect(content().string(containsString("href=\"/tags/spring-boot\">#spring boot</a>")));
     }
 
     @Test

@@ -13,5 +13,8 @@
     <include file="changes/005-insert-markdown-sample-post.xml" relativeToChangelogFile="true"/>
     <include file="changes/006-widen-post-content.xml" relativeToChangelogFile="true"/>
     <include file="changes/007-create-users-table.xml" relativeToChangelogFile="true"/>
+    <include file="changes/008-add-categories.xml" relativeToChangelogFile="true"/>
+    <include file="changes/009-add-tags.xml" relativeToChangelogFile="true"/>
+    <include file="changes/010-insert-sample-categories-and-tags.xml" relativeToChangelogFile="true"/>
 
 </databaseChangeLog>

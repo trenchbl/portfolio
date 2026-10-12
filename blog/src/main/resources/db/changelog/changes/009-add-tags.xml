@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <changeSet id="009-create-tags-tables" author="blog">
+        <createTable tableName="tags">
+            <column name="id" type="BIGINT" autoIncrement="true">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="name" type="VARCHAR(50)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="slug" type="VARCHAR(100)">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uk_tags_slug"/>
+            </column>
+        </createTable>
+
+        <!-- Join table for the many-to-many relationship; the primary key prevents duplicate pairs -->
+        <createTable tableName="post_tags">
+            <column name="post_id" type="BIGINT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="tag_id" type="BIGINT">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <addPrimaryKey tableName="post_tags" columnNames="post_id, tag_id" constraintName="pk_post_tags"/>
+        <addForeignKeyConstraint constraintName="fk_post_tags_post"
+                                 baseTableName="post_tags" baseColumnNames="post_id"
+                                 referencedTableName="posts" referencedColumnNames="id"
+                                 onDelete="CASCADE"/>
+        <addForeignKeyConstraint constraintName="fk_post_tags_tag"
+                                 baseTableName="post_tags" baseColumnNames="tag_id"
+                                 referencedTableName="tags" referencedColumnNames="id"
+                                 onDelete="CASCADE"/>
+    </changeSet>
+
+</databaseChangeLog>

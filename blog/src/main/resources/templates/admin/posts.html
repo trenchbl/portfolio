@@ -5,6 +5,8 @@
 <header th:replace="~{fragments/layout :: header('admin')}"></header>
 
 <main class="container container--wide">
+    <nav th:replace="~{fragments/layout :: admin-nav('posts')}"></nav>
+
     <div class="page-heading">
         <h1 class="page-title">Posts</h1>
         <a class="button" th:href="@{/admin/posts/new}">New post</a>
@@ -18,6 +20,7 @@
         <thead>
         <tr>
             <th scope="col">Title</th>
+            <th scope="col">Category</th>
             <th scope="col">Status</th>
             <th scope="col">Last updated</th>
             <th scope="col"><span class="visually-hidden">Actions</span></th>
@@ -29,6 +32,7 @@
                 <a th:href="@{/admin/posts/{id}/edit(id=${post.id})}" th:text="${post.title}">Post title</a>
                 <div class="admin-table__slug" th:text="|/posts/${post.slug}|">/posts/slug</div>
             </td>
+            <td th:text="${post.categoryName}">General</td>
             <td>
                 <span th:if="${post.published}" class="badge badge--published">Published</span>
                 <span th:unless="${post.published}" class="badge badge--draft">Draft</span>

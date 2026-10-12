@@ -26,7 +26,31 @@
     </div>
 </header>
 
+<nav th:fragment="admin-nav(active)" class="admin-nav" aria-label="Admin">
+    <a th:href="@{/admin/posts}" th:classappend="${active == 'posts'} ? 'is-active'">Posts</a>
+    <a th:href="@{/admin/categories}" th:classappend="${active == 'categories'} ? 'is-active'">Categories</a>
+</nav>
+
 <p th:fragment="flash" th:if="${message}" class="flash" role="status" th:text="${message}">Saved</p>
+
+<article th:fragment="post-card(post)" class="post-card">
+    <h2 class="post-card__title">
+        <a th:href="@{/posts/{slug}(slug=${post.slug})}" th:text="${post.title}">Post title</a>
+    </h2>
+    <p class="post-meta">
+        <time th:datetime="${#temporals.formatISO(post.publishedAt)}"
+              th:text="${#temporals.format(post.publishedAt, 'd MMMM yyyy')}">1 January 2026</time>
+        in <a th:href="@{/categories/{slug}(slug=${post.category.slug})}" th:text="${post.category.name}">Category</a>
+    </p>
+    <p class="post-card__summary" th:if="${post.summary}" th:text="${post.summary}">Summary</p>
+    <ul th:replace="~{fragments/layout :: tag-list(${post.tags})}"></ul>
+</article>
+
+<ul th:fragment="tag-list(tags)" th:unless="${#lists.isEmpty(tags)}" class="tag-list" aria-label="Tags">
+    <li th:each="tag : ${tags}">
+        <a class="tag" th:href="@{/tags/{slug}(slug=${tag.slug})}" th:text="|#${tag.name}|">#tag</a>
+    </li>
+</ul>
 
 <nav th:fragment="pagination(page, baseUrl)" th:if="${page.totalPages > 1}" class="pagination" aria-label="Pagination">
     <a th:if="${page.hasPrevious()}" rel="prev" class="pagination__link"

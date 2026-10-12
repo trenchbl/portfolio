@@ -13,14 +13,20 @@
     <article class="post">
         <header class="post__header">
             <h1 class="page-title" th:text="${post.title}">Post title</h1>
-            <time class="post__date" th:if="${post.publishedAt}"
-                  th:datetime="${#temporals.formatISO(post.publishedAt)}"
-                  th:text="${#temporals.format(post.publishedAt, 'd MMMM yyyy')}">1 January 2026</time>
+            <p class="post-meta">
+                <time th:if="${post.publishedAt}"
+                      th:datetime="${#temporals.formatISO(post.publishedAt)}"
+                      th:text="${#temporals.format(post.publishedAt, 'd MMMM yyyy')}">1 January 2026</time>
+                <th:block th:if="${post.publishedAt}">in</th:block>
+                <a th:href="@{/categories/{slug}(slug=${post.category.slug})}" th:text="${post.category.name}">Category</a>
+            </p>
         </header>
 
         <p class="post__summary" th:if="${post.summary}" th:text="${post.summary}">Summary</p>
 
         <div class="prose post__content" th:utext="${post.contentHtml}">Content</div>
+
+        <ul th:replace="~{fragments/layout :: tag-list(${post.tags})}"></ul>
     </article>
 
     <p th:unless="${preview}"><a th:href="@{/}">&larr; All posts</a></p>

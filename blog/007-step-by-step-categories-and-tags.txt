@@ -1,0 +1,2191 @@
+STEP 007 - CATEGORIES AND TAGS
+==============================
+
+
+1. GOAL
+-------
+At the end of this step you will have:
+- Exactly one category per post, and any number of tags
+- Pages for /categories/{slug} and /tags/{slug}, with pagination
+- The category and tags on every post card and post page, as links
+- A category list and a tags field in the admin post form. New tags are
+  created when you save, and tags that no post uses any more disappear.
+- An admin page at /admin/categories to add and delete categories
+- Existing posts moved into a "General" category by the migration
+- Lists of posts loaded with a fixed number of queries, however many
+  posts are on the page
+
+
+2. CONCEPTS
+-----------
+Two kinds of relationship
+  - Category: many posts belong to one category. That is a foreign key
+    column posts.category_id, mapped with @ManyToOne.
+  - Tags: a post has many tags, and a tag belongs to many posts. A column
+    cannot hold that, so a join table post_tags holds one row per
+    (post, tag) pair, mapped with @ManyToMany and @JoinTable. Its primary
+    key is the pair itself, so the same tag cannot be added to a post
+    twice.
+
+Adding a required column to a table with data
+  posts.category_id must be NOT NULL, but the existing rows have no
+  category. The migration therefore runs in three steps:
+  1. Add the column, allowing NULL.
+  2. Fill it in (here: every post goes into "General").
+  3. Add the NOT NULL and foreign key constraints.
+  This is the same pattern as the slug column in step 003. "General" is
+  not sample data: every installation needs it for its existing posts, so
+  its insert has no dev context.
+
+Foreign keys and ON DELETE
+  - fk_posts_category has no ON DELETE rule, so the database refuses to
+    delete a category that still has posts. The service checks this first
+    to give a clear answer. The foreign key is the safety net.
+  - The post_tags foreign keys use ON DELETE CASCADE. Deleting a post or a
+    tag removes its rows in the join table, which are meaningless on their
+    own.
+
+LAZY loading and the N+1 problem
+  @ManyToOne loads eagerly by default: every query for posts would also
+  load their categories, whether needed or not. The mapping sets
+  fetch = LAZY, so Hibernate loads the category the first time it is
+  used. Collections like the tags are lazy by default.
+  Lazy loading has a trap. A page of 5 posts would load each post's
+  category and tags one at a time: 1 query for the posts plus 2 per post,
+  so "N+1" queries. The setting hibernate.default_batch_fetch_size=20
+  makes Hibernate load the categories (and the tags) of up to 20 posts in
+  one query with WHERE id IN (...). The home page now needs 4 queries
+  (posts, count, categories, tags), however many posts it shows.
+  With open-in-view=false (step 002), lazy data must be loaded inside the
+  service's transaction. That is why the services turn entities into
+  records (PostSummary and others) before returning them.
+
+A set of tags
+  Post.tags is a Set: a post cannot have the same tag twice. A Set has no
+  order, so TagLink.sorted sorts the tags by name for display.
+
+Tags are typed, categories are chosen
+  Categories are a short, curated list, so the form offers a select box
+  and the admin manages the list on its own page. Tags are informal and
+  numerous, so the author types them, separated by commas. The service
+  then:
+  - turns each name into a slug ("Spring Boot" becomes spring-boot)
+  - treats names with the same slug as the same tag, so "Spring Boot" and
+    "spring-boot" never become two tags
+  - reuses existing tags and creates the missing ones
+  - after an update or delete, removes tags that no post uses any more,
+    so dead tags do not stay in the hint list
+  The rules (at most 10 tags, each at most 30 characters, each with a
+  letter or digit) are checked in TagNames. A problem becomes an error on
+  the tags field, just like a taken slug.
+
+Shared code in the web layer
+  Four controllers now check page numbers the same way (page 0 or past
+  the end is a 404). That logic moves into a small PageNumbers helper. The
+  post card moves into a Thymeleaf fragment, so the home page and the
+  category and tag pages show posts the same way.
+
+
+3. INSTRUCTIONS
+---------------
+  Stop the running app before you start (Ctrl+C), so DevTools does not run
+  a half-written changeset.
+
+3.1 Migrations
+
+  Create blog/src/main/resources/db/changelog/changes/008-add-categories.xml:
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <databaseChangeLog
+            xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+        <changeSet id="008-create-categories-table" author="blog">
+            <createTable tableName="categories">
+                <column name="id" type="BIGINT" autoIncrement="true">
+                    <constraints primaryKey="true" nullable="false"/>
+                </column>
+                <column name="name" type="VARCHAR(50)">
+                    <constraints nullable="false" unique="true" uniqueConstraintName="uk_categories_name"/>
+                </column>
+                <!-- Room for names where one letter becomes two, like ß becoming ss -->
+                <column name="slug" type="VARCHAR(100)">
+                    <constraints nullable="false" unique="true" uniqueConstraintName="uk_categories_slug"/>
+                </column>
+            </createTable>
+
+            <!-- Not sample data: every installation needs a category for its existing posts -->
+            <insert tableName="categories">
+                <column name="name" value="General"/>
+                <column name="slug" value="general"/>
+            </insert>
+        </changeSet>
+
+        <changeSet id="008-add-post-category" author="blog">
+            <addColumn tableName="posts">
+                <column name="category_id" type="BIGINT" afterColumn="slug"/>
+            </addColumn>
+
+            <sql>
+                UPDATE posts
+                SET category_id = (SELECT id FROM categories WHERE slug = 'general')
+            </sql>
+
+            <addNotNullConstraint tableName="posts" columnName="category_id" columnDataType="BIGINT"/>
+            <addForeignKeyConstraint constraintName="fk_posts_category"
+                                     baseTableName="posts" baseColumnNames="category_id"
+                                     referencedTableName="categories" referencedColumnNames="id"/>
+        </changeSet>
+
+    </databaseChangeLog>
+
+  Create blog/src/main/resources/db/changelog/changes/009-add-tags.xml:
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <databaseChangeLog
+            xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+        <changeSet id="009-create-tags-tables" author="blog">
+            <createTable tableName="tags">
+                <column name="id" type="BIGINT" autoIncrement="true">
+                    <constraints primaryKey="true" nullable="false"/>
+                </column>
+                <column name="name" type="VARCHAR(50)">
+                    <constraints nullable="false"/>
+                </column>
+                <column name="slug" type="VARCHAR(100)">
+                    <constraints nullable="false" unique="true" uniqueConstraintName="uk_tags_slug"/>
+                </column>
+            </createTable>
+
+            <!-- Join table for the many-to-many relationship; the primary key prevents duplicate pairs -->
+            <createTable tableName="post_tags">
+                <column name="post_id" type="BIGINT">
+                    <constraints nullable="false"/>
+                </column>
+                <column name="tag_id" type="BIGINT">
+                    <constraints nullable="false"/>
+                </column>
+            </createTable>
+            <addPrimaryKey tableName="post_tags" columnNames="post_id, tag_id" constraintName="pk_post_tags"/>
+            <addForeignKeyConstraint constraintName="fk_post_tags_post"
+                                     baseTableName="post_tags" baseColumnNames="post_id"
+                                     referencedTableName="posts" referencedColumnNames="id"
+                                     onDelete="CASCADE"/>
+            <addForeignKeyConstraint constraintName="fk_post_tags_tag"
+                                     baseTableName="post_tags" baseColumnNames="tag_id"
+                                     referencedTableName="tags" referencedColumnNames="id"
+                                     onDelete="CASCADE"/>
+        </changeSet>
+
+    </databaseChangeLog>
+
+  Create blog/src/main/resources/db/changelog/changes/010-insert-sample-categories-and-tags.xml
+  (dev data, assigned to the sample posts by slug):
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <databaseChangeLog
+            xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+        <changeSet id="010-insert-sample-categories-and-tags" author="blog" contextFilter="dev">
+            <insert tableName="categories">
+                <column name="name" value="Spring"/>
+                <column name="slug" value="spring"/>
+            </insert>
+            <insert tableName="categories">
+                <column name="name" value="Databases"/>
+                <column name="slug" value="databases"/>
+            </insert>
+            <insert tableName="categories">
+                <column name="name" value="Testing"/>
+                <column name="slug" value="testing"/>
+            </insert>
+
+            <sql>
+                UPDATE posts
+                SET category_id = (SELECT id FROM categories WHERE slug = 'spring')
+                WHERE slug IN ('package-by-feature', 'constructor-injection', 'thymeleaf-fragments');
+
+                UPDATE posts
+                SET category_id = (SELECT id FROM categories WHERE slug = 'databases')
+                WHERE slug IN ('why-liquibase-owns-the-schema', 'read-only-transactions');
+
+                UPDATE posts
+                SET category_id = (SELECT id FROM categories WHERE slug = 'testing')
+                WHERE slug = 'testing-with-real-databases';
+            </sql>
+
+            <sql>
+                INSERT INTO tags (name, slug) VALUES
+                    ('meta', 'meta'),
+                    ('markdown', 'markdown'),
+                    ('liquibase', 'liquibase'),
+                    ('mysql', 'mysql'),
+                    ('testcontainers', 'testcontainers'),
+                    ('architecture', 'architecture'),
+                    ('dependency injection', 'dependency-injection'),
+                    ('spring boot', 'spring-boot'),
+                    ('transactions', 'transactions'),
+                    ('thymeleaf', 'thymeleaf');
+
+                INSERT INTO post_tags (post_id, tag_id)
+                SELECT p.id, t.id
+                FROM posts p
+                JOIN tags t ON (p.slug, t.slug) IN (
+                    ('welcome-to-the-blog', 'meta'),
+                    ('writing-posts-in-markdown', 'meta'),
+                    ('writing-posts-in-markdown', 'markdown'),
+                    ('why-liquibase-owns-the-schema', 'liquibase'),
+                    ('why-liquibase-owns-the-schema', 'mysql'),
+                    ('testing-with-real-databases', 'testcontainers'),
+                    ('testing-with-real-databases', 'mysql'),
+                    ('package-by-feature', 'architecture'),
+                    ('constructor-injection', 'dependency-injection'),
+                    ('constructor-injection', 'spring-boot'),
+                    ('read-only-transactions', 'transactions'),
+                    ('read-only-transactions', 'spring-boot'),
+                    ('thymeleaf-fragments', 'thymeleaf'));
+            </sql>
+        </changeSet>
+
+    </databaseChangeLog>
+
+  Liquibase splits a <sql> block into statements at each ";". The ids are
+  looked up by slug, never hard-coded, because auto-increment ids differ
+  between databases.
+
+  Register all three in db.changelog-master.xml, after 007:
+
+    <include file="changes/008-add-categories.xml" relativeToChangelogFile="true"/>
+    <include file="changes/009-add-tags.xml" relativeToChangelogFile="true"/>
+    <include file="changes/010-insert-sample-categories-and-tags.xml" relativeToChangelogFile="true"/>
+
+3.2 Batch fetching
+
+  In blog/src/main/resources/application.properties, after
+  spring.jpa.open-in-view=false, add:
+
+    # Load lazy categories and tags for up to 20 posts in one query instead of one query per post
+    spring.jpa.properties.hibernate.default_batch_fetch_size=20
+
+3.3 Entities and repositories
+
+  All new classes in this step go into com.blog.post, next to Post. They
+  belong to the same feature, and the repositories can stay
+  package-private.
+
+  blog/src/main/java/com/blog/post/Category.java:
+
+    package com.blog.post;
+
+    import jakarta.persistence.Column;
+    import jakarta.persistence.Entity;
+    import jakarta.persistence.GeneratedValue;
+    import jakarta.persistence.GenerationType;
+    import jakarta.persistence.Id;
+    import jakarta.persistence.Table;
+
+    @Entity
+    @Table(name = "categories")
+    public class Category {
+
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(nullable = false, length = 50)
+        private String name;
+
+        @Column(nullable = false, length = 100)
+        private String slug;
+
+        protected Category() {
+        }
+
+        public Category(String name, String slug) {
+            this.name = name;
+            this.slug = slug;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public String getSlug() {
+            return slug;
+        }
+    }
+
+  blog/src/main/java/com/blog/post/Tag.java is the same class with the
+  name Tag and @Table(name = "tags"). Replace "Category" with "Tag" and
+  "categories" with "tags".
+
+  In blog/src/main/java/com/blog/post/Post.java, add these imports:
+
+    import jakarta.persistence.FetchType;
+    import jakarta.persistence.JoinColumn;
+    import jakarta.persistence.JoinTable;
+    import jakarta.persistence.ManyToMany;
+    import jakarta.persistence.ManyToOne;
+
+    import java.util.Collection;
+    import java.util.Collections;
+    import java.util.HashSet;
+    import java.util.Set;
+
+  Add the two fields after slug:
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "category_id", nullable = false)
+    private Category category;
+
+    @ManyToMany
+    @JoinTable(name = "post_tags",
+            joinColumns = @JoinColumn(name = "post_id"),
+            inverseJoinColumns = @JoinColumn(name = "tag_id"))
+    private Set<Tag> tags = new HashSet<>();
+
+  Give the constructor and update() a category parameter, and add
+  replaceTags:
+
+    public Post(String title, String slug, String summary, String content, Category category) {
+        this.title = title;
+        this.slug = slug;
+        this.summary = summary;
+        this.content = content;
+        this.category = category;
+    }
+
+    public void update(String title, String slug, String summary, String content, Category category) {
+        this.title = title;
+        this.slug = slug;
+        this.summary = summary;
+        this.content = content;
+        this.category = category;
+    }
+
+    public void replaceTags(Collection<Tag> newTags) {
+        tags.clear();
+        tags.addAll(newTags);
+    }
+
+  And two getters:
+
+    public Category getCategory() {
+        return category;
+    }
+
+    public Set<Tag> getTags() {
+        return Collections.unmodifiableSet(tags);
+    }
+
+  Notes:
+  - Post owns both relationships: saving a post writes posts.category_id
+    and the post_tags rows. Category and Tag have no list of posts,
+    because nothing needs to walk in that direction, and the repository
+    queries below cover the rest.
+  - getTags() returns a read-only view, so tags only change through
+    replaceTags. Never replace the Set itself with a new one: Hibernate
+    tracks changes to the collection object it gave you.
+
+  Add these to blog/src/main/java/com/blog/post/PostRepository.java:
+
+    Page<Post> findByCategory_SlugAndPublishedAtIsNotNull(String categorySlug, Pageable pageable);
+
+    Page<Post> findByTags_SlugAndPublishedAtIsNotNull(String tagSlug, Pageable pageable);
+
+    boolean existsByCategory_Id(Long categoryId);
+
+  The underscore marks a property path: Category_Slug means
+  post.category.slug, and Tags_Slug joins the tags collection. Spring Data
+  writes the joins and the count query for you.
+
+  blog/src/main/java/com/blog/post/CategoryRepository.java:
+
+    package com.blog.post;
+
+    import org.springframework.data.jpa.repository.JpaRepository;
+    import org.springframework.data.jpa.repository.Query;
+
+    import java.util.List;
+    import java.util.Optional;
+
+    interface CategoryRepository extends JpaRepository<Category, Long> {
+
+        Optional<Category> findBySlug(String slug);
+
+        boolean existsBySlug(String slug);
+
+        @Query("""
+                select new com.blog.post.AdminCategoryItem(c.id, c.name, c.slug, count(p))
+                from Category c left join Post p on p.category = c
+                group by c.id, c.name, c.slug
+                order by c.name""")
+        List<AdminCategoryItem> findAllWithPostCounts();
+    }
+
+  "select new" builds the records directly in the query, one row per
+  category with its post count. The left join keeps categories without
+  posts (count 0).
+
+  blog/src/main/java/com/blog/post/TagRepository.java:
+
+    package com.blog.post;
+
+    import org.springframework.data.jpa.repository.JpaRepository;
+    import org.springframework.data.jpa.repository.Modifying;
+    import org.springframework.data.jpa.repository.Query;
+
+    import java.util.Collection;
+    import java.util.List;
+    import java.util.Optional;
+
+    interface TagRepository extends JpaRepository<Tag, Long> {
+
+        Optional<Tag> findBySlug(String slug);
+
+        List<Tag> findBySlugIn(Collection<String> slugs);
+
+        /**
+         * Removes tags that no post uses any more. Flushes first, so tag changes
+         * made earlier in the transaction are already in the database.
+         */
+        @Modifying(flushAutomatically = true)
+        @Query("delete from Tag t where not exists (select 1 from Post p join p.tags pt where pt = t)")
+        int deleteUnused();
+    }
+
+  A bulk delete runs directly in the database and skips the persistence
+  context. Without flushAutomatically, the post_tags changes from the same
+  transaction would still be waiting in memory, and the query would see
+  the old rows.
+
+3.4 Records and exceptions
+
+  blog/src/main/java/com/blog/post/CategoryLink.java:
+
+    package com.blog.post;
+
+    public record CategoryLink(String name, String slug) {
+
+        static CategoryLink from(Category category) {
+            return new CategoryLink(category.getName(), category.getSlug());
+        }
+    }
+
+  blog/src/main/java/com/blog/post/TagLink.java:
+
+    package com.blog.post;
+
+    import java.util.Collection;
+    import java.util.Comparator;
+    import java.util.List;
+
+    public record TagLink(String name, String slug) {
+
+        static TagLink from(Tag tag) {
+            return new TagLink(tag.getName(), tag.getSlug());
+        }
+
+        /**
+         * Tags are stored in a Set, which has no order, so they are sorted here
+         * to show them the same way every time.
+         */
+        static List<TagLink> sorted(Collection<Tag> tags) {
+            return tags.stream()
+                    .map(TagLink::from)
+                    .sorted(Comparator.comparing(TagLink::name, String.CASE_INSENSITIVE_ORDER))
+                    .toList();
+        }
+    }
+
+  blog/src/main/java/com/blog/post/AdminCategoryItem.java:
+
+    package com.blog.post;
+
+    /**
+     * @param postCount all posts in the category, drafts included
+     */
+    public record AdminCategoryItem(Long id, String name, String slug, long postCount) {
+
+        public boolean inUse() {
+            return postCount > 0;
+        }
+    }
+
+  Extend the existing records.
+
+  PostSummary.java:
+
+    package com.blog.post;
+
+    import java.time.LocalDateTime;
+    import java.util.List;
+
+    public record PostSummary(Long id, String title, String slug, String summary, LocalDateTime publishedAt,
+                              CategoryLink category, List<TagLink> tags) {
+
+        static PostSummary from(Post post) {
+            return new PostSummary(post.getId(), post.getTitle(), post.getSlug(), post.getSummary(), post.getPublishedAt(),
+                    CategoryLink.from(post.getCategory()), TagLink.sorted(post.getTags()));
+        }
+    }
+
+  PostDetail.java gets the same two components at the end:
+
+    public record PostDetail(String title, String slug, String summary, String contentHtml, LocalDateTime publishedAt,
+                             CategoryLink category, List<TagLink> tags) {
+    }
+
+  AdminPostItem.java gets the category name:
+
+    public record AdminPostItem(Long id, String title, String slug, String categoryName,
+                                LocalDateTime publishedAt, LocalDateTime updatedAt) {
+
+        public boolean published() {
+            return publishedAt != null;
+        }
+
+        static AdminPostItem from(Post post) {
+            return new AdminPostItem(post.getId(), post.getTitle(), post.getSlug(), post.getCategory().getName(),
+                    post.getPublishedAt(), post.getUpdatedAt());
+        }
+    }
+
+  Five small exceptions. CategoryNotFoundException.java, built like
+  PostNotFoundException:
+
+    package com.blog.post;
+
+    import org.springframework.http.HttpStatus;
+    import org.springframework.web.bind.annotation.ResponseStatus;
+
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public class CategoryNotFoundException extends RuntimeException {
+
+        private CategoryNotFoundException(String message) {
+            super(message);
+        }
+
+        public static CategoryNotFoundException forSlug(String slug) {
+            return new CategoryNotFoundException("No category with slug '" + slug + "'");
+        }
+
+        public static CategoryNotFoundException forId(Long id) {
+            return new CategoryNotFoundException("No category with id " + id);
+        }
+    }
+
+  TagNotFoundException.java:
+
+    package com.blog.post;
+
+    import org.springframework.http.HttpStatus;
+    import org.springframework.web.bind.annotation.ResponseStatus;
+
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public class TagNotFoundException extends RuntimeException {
+
+        public TagNotFoundException(String slug) {
+            super("No tag with slug '" + slug + "'");
+        }
+    }
+
+  CategoryInUseException.java:
+
+    package com.blog.post;
+
+    import org.springframework.http.HttpStatus;
+    import org.springframework.web.bind.annotation.ResponseStatus;
+
+    /**
+     * The admin page hides the delete button for categories with posts, so this
+     * only happens when two admins work at the same time or a request is crafted.
+     */
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public class CategoryInUseException extends RuntimeException {
+
+        public CategoryInUseException(String name) {
+            super("The category '" + name + "' still has posts");
+        }
+    }
+
+  InvalidTagsException.java:
+
+    package com.blog.post;
+
+    /**
+     * The message is written for authors and is shown next to the tags field.
+     */
+    public class InvalidTagsException extends RuntimeException {
+
+        public InvalidTagsException(String message) {
+            super(message);
+        }
+    }
+
+  InvalidCategoryNameException.java is the same, with "name field" in the
+  comment.
+
+3.5 Parsing tags
+
+  blog/src/main/java/com/blog/post/TagNames.java:
+
+    package com.blog.post;
+
+    import java.util.LinkedHashMap;
+    import java.util.Map;
+    import java.util.regex.Pattern;
+
+    final class TagNames {
+
+        static final int MAX_TAGS = 10;
+        static final int MAX_LENGTH = 30;
+
+        private static final Pattern WHITESPACE = Pattern.compile("\\s+");
+
+        private TagNames() {
+        }
+
+        /**
+         * Splits "Spring Boot, testing" into tag names, keyed by slug. Blank
+         * entries are ignored, and names with the same slug count once, so
+         * "Spring Boot, spring-boot" is a single tag.
+         *
+         * @throws InvalidTagsException with a message for the author
+         */
+        static Map<String, String> parse(String input) {
+            Map<String, String> namesBySlug = new LinkedHashMap<>();
+            if (input == null) {
+                return namesBySlug;
+            }
+            for (String part : input.split(",")) {
+                String name = WHITESPACE.matcher(part.strip()).replaceAll(" ");
+                if (name.isEmpty()) {
+                    continue;
+                }
+                if (name.length() > MAX_LENGTH) {
+                    throw new InvalidTagsException("Keep each tag to " + MAX_LENGTH + " characters or fewer: \"" + name + "\"");
+                }
+                String slug = Slugs.slugify(name);
+                if (slug.isEmpty()) {
+                    throw new InvalidTagsException("Each tag needs at least one letter or digit: \"" + name + "\"");
+                }
+                namesBySlug.putIfAbsent(slug, name);
+            }
+            if (namesBySlug.size() > MAX_TAGS) {
+                throw new InvalidTagsException("Use at most " + MAX_TAGS + " tags");
+            }
+            return namesBySlug;
+        }
+    }
+
+  The messages contain what the author typed. That is safe, because
+  th:errors escapes HTML like th:text does.
+
+3.6 The post form
+
+  In blog/src/main/java/com/blog/post/PostForm.java, add two fields after
+  slug:
+
+    @NotNull(message = "Choose a category")
+    private Long categoryId;
+
+    /**
+     * Comma-separated tag names, for example "spring boot, testing".
+     */
+    @Size(max = 500, message = "Use fewer tags")
+    private String tags = "";
+
+  Add getters and setters for both (getCategoryId/setCategoryId,
+  getTags/setTags), the imports jakarta.validation.constraints.NotNull and
+  java.util.stream.Collectors, and two lines in from(Post), after
+  setSlug:
+
+        form.setCategoryId(post.getCategory().getId());
+        form.setTags(TagLink.sorted(post.getTags()).stream()
+                .map(TagLink::name)
+                .collect(Collectors.joining(", ")));
+
+  categoryId is a Long, not a long: the empty "Choose a category" option
+  is bound as null, and @NotNull turns that into a message.
+
+3.7 The services
+
+  Replace blog/src/main/java/com/blog/post/PostService.java:
+
+    package com.blog.post;
+
+    import com.blog.markdown.MarkdownRenderer;
+    import org.springframework.data.domain.Page;
+    import org.springframework.data.domain.PageRequest;
+    import org.springframework.data.domain.Sort;
+    import org.springframework.stereotype.Service;
+    import org.springframework.transaction.annotation.Transactional;
+
+    import java.time.LocalDateTime;
+    import java.util.ArrayList;
+    import java.util.List;
+    import java.util.Map;
+    import java.util.function.Function;
+    import java.util.stream.Collectors;
+
+    @Service
+    @Transactional(readOnly = true)
+    public class PostService {
+
+        public static final int PAGE_SIZE = 5;
+        public static final int ADMIN_PAGE_SIZE = 20;
+
+        private static final Sort NEWEST_FIRST = Sort.by(Sort.Order.desc("publishedAt"), Sort.Order.desc("id"));
+        private static final Sort RECENTLY_UPDATED_FIRST = Sort.by(Sort.Order.desc("updatedAt"), Sort.Order.desc("id"));
+        private static final String FALLBACK_SLUG = "post";
+
+        private final PostRepository postRepository;
+        private final CategoryRepository categoryRepository;
+        private final TagRepository tagRepository;
+        private final MarkdownRenderer markdownRenderer;
+
+        PostService(PostRepository postRepository, CategoryRepository categoryRepository, TagRepository tagRepository,
+                    MarkdownRenderer markdownRenderer) {
+            this.postRepository = postRepository;
+            this.categoryRepository = categoryRepository;
+            this.tagRepository = tagRepository;
+            this.markdownRenderer = markdownRenderer;
+        }
+
+        /**
+         * @param pageNumber 1-based page number, as shown to visitors
+         */
+        public Page<PostSummary> findPublished(int pageNumber) {
+            return postRepository.findByPublishedAtIsNotNull(publicPage(pageNumber)).map(PostSummary::from);
+        }
+
+        /**
+         * @throws CategoryNotFoundException if there is no such category
+         */
+        public CategoryLink getCategory(String slug) {
+            return categoryRepository.findBySlug(slug)
+                    .map(CategoryLink::from)
+                    .orElseThrow(() -> CategoryNotFoundException.forSlug(slug));
+        }
+
+        public Page<PostSummary> findPublishedByCategory(String categorySlug, int pageNumber) {
+            return postRepository.findByCategory_SlugAndPublishedAtIsNotNull(categorySlug, publicPage(pageNumber))
+                    .map(PostSummary::from);
+        }
+
+        /**
+         * @throws TagNotFoundException if there is no such tag
+         */
+        public TagLink getTag(String slug) {
+            return tagRepository.findBySlug(slug)
+                    .map(TagLink::from)
+                    .orElseThrow(() -> new TagNotFoundException(slug));
+        }
+
+        public Page<PostSummary> findPublishedByTag(String tagSlug, int pageNumber) {
+            return postRepository.findByTags_SlugAndPublishedAtIsNotNull(tagSlug, publicPage(pageNumber))
+                    .map(PostSummary::from);
+        }
+
+        public PostDetail findPublishedBySlug(String slug) {
+            return postRepository.findBySlugAndPublishedAtIsNotNull(slug)
+                    .map(this::toDetail)
+                    .orElseThrow(() -> PostNotFoundException.forSlug(slug));
+        }
+
+        /**
+         * All posts, drafts included. {@code pageNumber} is 1-based.
+         */
+        public Page<AdminPostItem> findAllForAdmin(int pageNumber) {
+            PageRequest pageRequest = PageRequest.of(pageNumber - 1, ADMIN_PAGE_SIZE, RECENTLY_UPDATED_FIRST);
+            return postRepository.findAll(pageRequest).map(AdminPostItem::from);
+        }
+
+        /**
+         * For the hint next to the tags field in the admin form.
+         */
+        public List<String> findAllTagNames() {
+            return tagRepository.findAll(Sort.by("name")).stream().map(Tag::getName).toList();
+        }
+
+        public PostForm getForm(Long id) {
+            return PostForm.from(getPost(id));
+        }
+
+        /**
+         * Like {@link #findPublishedBySlug}, but also shows drafts.
+         */
+        public PostDetail getPreview(Long id) {
+            return toDetail(getPost(id));
+        }
+
+        /**
+         * @throws InvalidTagsException     if the tags field cannot be used as it is
+         * @throws SlugAlreadyUsedException if the typed slug belongs to another post
+         */
+        @Transactional
+        public Long create(PostForm form) {
+            Map<String, String> tagNames = TagNames.parse(form.getTags());
+            Category category = getCategoryById(form.getCategoryId());
+            String slug = chooseSlug(form, null);
+            Post post = new Post(form.getTitle().strip(), slug, blankToNull(form.getSummary()), form.getContent(), category);
+            post.replaceTags(findOrCreateTags(tagNames));
+            if (form.isPublished()) {
+                post.publish(LocalDateTime.now());
+            }
+            return postRepository.save(post).getId();
+        }
+
+        /**
+         * @throws InvalidTagsException     if the tags field cannot be used as it is
+         * @throws SlugAlreadyUsedException if the typed slug belongs to another post
+         */
+        @Transactional
+        public void update(Long id, PostForm form) {
+            Post post = getPost(id);
+            Map<String, String> tagNames = TagNames.parse(form.getTags());
+            Category category = getCategoryById(form.getCategoryId());
+            String slug = chooseSlug(form, id);
+            post.update(form.getTitle().strip(), slug, blankToNull(form.getSummary()), form.getContent(), category);
+            post.replaceTags(findOrCreateTags(tagNames));
+            if (form.isPublished() && !post.isPublished()) {
+                post.publish(LocalDateTime.now());
+            } else if (!form.isPublished() && post.isPublished()) {
+                post.unpublish();
+            }
+            tagRepository.deleteUnused();
+        }
+
+        @Transactional
+        public void delete(Long id) {
+            postRepository.delete(getPost(id));
+            tagRepository.deleteUnused();
+        }
+
+        private Post getPost(Long id) {
+            return postRepository.findById(id).orElseThrow(() -> PostNotFoundException.forId(id));
+        }
+
+        private Category getCategoryById(Long id) {
+            return categoryRepository.findById(id).orElseThrow(() -> CategoryNotFoundException.forId(id));
+        }
+
+        /**
+         * Reuses the tags that already exist and creates the others.
+         */
+        private List<Tag> findOrCreateTags(Map<String, String> namesBySlug) {
+            Map<String, Tag> existing = tagRepository.findBySlugIn(namesBySlug.keySet()).stream()
+                    .collect(Collectors.toMap(Tag::getSlug, Function.identity()));
+            List<Tag> tags = new ArrayList<>();
+            namesBySlug.forEach((slug, name) -> {
+                Tag tag = existing.get(slug);
+                tags.add(tag != null ? tag : tagRepository.save(new Tag(name, slug)));
+            });
+            return tags;
+        }
+
+        // chooseSlug and isTaken stay exactly as in step 005
+
+        private PostDetail toDetail(Post post) {
+            return new PostDetail(
+                    post.getTitle(),
+                    post.getSlug(),
+                    post.getSummary(),
+                    markdownRenderer.toHtml(post.getContent()),
+                    post.getPublishedAt(),
+                    CategoryLink.from(post.getCategory()),
+                    TagLink.sorted(post.getTags()));
+        }
+
+        private static PageRequest publicPage(int pageNumber) {
+            return PageRequest.of(pageNumber - 1, PAGE_SIZE, NEWEST_FIRST);
+        }
+
+        private static String blankToNull(String value) {
+            return value == null || value.isBlank() ? null : value.strip();
+        }
+    }
+
+  Notes:
+  - The tags are checked first, before anything is saved. A mistake in
+    the tags field leaves the database unchanged.
+  - findOrCreateTags looks up all existing tags in one query (WHERE slug
+    IN ...) instead of one query per tag.
+  - The category comes from the database by id. A tampered form with an
+    unknown id gets a 404, like an unknown post.
+
+  blog/src/main/java/com/blog/post/CategoryForm.java:
+
+    package com.blog.post;
+
+    import jakarta.validation.constraints.NotBlank;
+    import jakarta.validation.constraints.Size;
+
+    public class CategoryForm {
+
+        @NotBlank(message = "Enter a name")
+        @Size(max = 50, message = "Keep the name under 50 characters")
+        private String name = "";
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+    }
+
+  blog/src/main/java/com/blog/post/CategoryService.java:
+
+    package com.blog.post;
+
+    import org.springframework.stereotype.Service;
+    import org.springframework.transaction.annotation.Transactional;
+
+    import java.util.List;
+
+    @Service
+    @Transactional(readOnly = true)
+    public class CategoryService {
+
+        private final CategoryRepository categoryRepository;
+        private final PostRepository postRepository;
+
+        CategoryService(CategoryRepository categoryRepository, PostRepository postRepository) {
+            this.categoryRepository = categoryRepository;
+            this.postRepository = postRepository;
+        }
+
+        /**
+         * All categories by name, with the number of posts in each.
+         */
+        public List<AdminCategoryItem> findAll() {
+            return categoryRepository.findAllWithPostCounts();
+        }
+
+        /**
+         * The slug is always generated from the name, so "Spring Boot" and
+         * "spring boot" count as the same category.
+         *
+         * @throws InvalidCategoryNameException if the name cannot be used
+         */
+        @Transactional
+        public void create(CategoryForm form) {
+            String name = form.getName().strip();
+            String slug = Slugs.slugify(name);
+            if (slug.isEmpty()) {
+                throw new InvalidCategoryNameException("Use at least one letter (a-z) or digit");
+            }
+            if (categoryRepository.existsBySlug(slug)) {
+                throw new InvalidCategoryNameException("This category already exists");
+            }
+            categoryRepository.save(new Category(name, slug));
+        }
+
+        /**
+         * @throws CategoryInUseException if posts still belong to the category
+         */
+        @Transactional
+        public void delete(Long id) {
+            Category category = categoryRepository.findById(id).orElseThrow(() -> CategoryNotFoundException.forId(id));
+            if (postRepository.existsByCategory_Id(id)) {
+                throw new CategoryInUseException(category.getName());
+            }
+            categoryRepository.delete(category);
+        }
+    }
+
+  Renaming categories is left out to keep the step short. It would be a
+  form like the post form, with the same slug question: keep the old URL,
+  or change it?
+
+3.8 Controllers
+
+  blog/src/main/java/com/blog/web/PageNumbers.java:
+
+    package com.blog.web;
+
+    import org.springframework.data.domain.Page;
+    import org.springframework.http.HttpStatus;
+    import org.springframework.web.server.ResponseStatusException;
+
+    /**
+     * Page numbers in URLs start at 1. Pages that cannot exist are 404s, so
+     * search engines do not index endless empty pages.
+     */
+    final class PageNumbers {
+
+        private PageNumbers() {
+        }
+
+        static void requireValid(int pageNumber) {
+            if (pageNumber < 1) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            }
+        }
+
+        /**
+         * Page 1 always exists, so an empty list can show its "nothing here" message.
+         */
+        static <T> Page<T> requireExisting(int pageNumber, Page<T> page) {
+            if (pageNumber > 1 && pageNumber > page.getTotalPages()) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            }
+            return page;
+        }
+    }
+
+  Use it in HomeController:
+
+    @GetMapping("/")
+    String home(@RequestParam(defaultValue = "1") int page, Model model) {
+        PageNumbers.requireValid(page);
+        model.addAttribute("posts", PageNumbers.requireExisting(page, postService.findPublished(page)));
+        return "home";
+    }
+
+  Remove the imports HomeController no longer needs (Page, PostSummary,
+  HttpStatus, ResponseStatusException).
+
+  blog/src/main/java/com/blog/web/PostListController.java:
+
+    package com.blog.web;
+
+    import com.blog.post.CategoryLink;
+    import com.blog.post.PostService;
+    import com.blog.post.TagLink;
+    import org.springframework.stereotype.Controller;
+    import org.springframework.ui.Model;
+    import org.springframework.web.bind.annotation.GetMapping;
+    import org.springframework.web.bind.annotation.PathVariable;
+    import org.springframework.web.bind.annotation.RequestParam;
+
+    /**
+     * Published posts filtered by category or tag.
+     */
+    @Controller
+    class PostListController {
+
+        private static final String VIEW = "post-list";
+
+        private final PostService postService;
+
+        PostListController(PostService postService) {
+            this.postService = postService;
+        }
+
+        @GetMapping("/categories/{slug}")
+        String category(@PathVariable String slug, @RequestParam(defaultValue = "1") int page, Model model) {
+            PageNumbers.requireValid(page);
+            CategoryLink category = postService.getCategory(slug);
+            model.addAttribute("heading", "Posts in " + category.name());
+            model.addAttribute("baseUrl", "/categories/" + category.slug());
+            model.addAttribute("posts", PageNumbers.requireExisting(page, postService.findPublishedByCategory(slug, page)));
+            return VIEW;
+        }
+
+        @GetMapping("/tags/{slug}")
+        String tag(@PathVariable String slug, @RequestParam(defaultValue = "1") int page, Model model) {
+            PageNumbers.requireValid(page);
+            TagLink tag = postService.getTag(slug);
+            model.addAttribute("heading", "Posts tagged #" + tag.name());
+            model.addAttribute("baseUrl", "/tags/" + tag.slug());
+            model.addAttribute("posts", PageNumbers.requireExisting(page, postService.findPublishedByTag(slug, page)));
+            return VIEW;
+        }
+    }
+
+  An unknown slug is a 404. A category that exists but only has drafts
+  shows "No posts have been published here yet".
+
+  In blog/src/main/java/com/blog/web/AdminPostController.java:
+  - Inject CategoryService next to PostService:
+
+      private final PostService postService;
+      private final CategoryService categoryService;
+
+      AdminPostController(PostService postService, CategoryService categoryService) {
+          this.postService = postService;
+          this.categoryService = categoryService;
+      }
+
+  - Add a helper that every form-showing method returns:
+
+      /**
+       * The form needs the choices for its category list and tag hint, also
+       * when it is shown again with validation errors.
+       */
+      private String showForm(Model model) {
+          model.addAttribute("categories", categoryService.findAll());
+          model.addAttribute("existingTags", postService.findAllTagNames());
+          return FORM_VIEW;
+      }
+
+  - Replace every "return FORM_VIEW;" with "return showForm(model);".
+    create() needs a Model parameter for that:
+
+      @PostMapping
+      String create(@Valid @ModelAttribute("post") PostForm form, BindingResult bindingResult,
+                    Model model, RedirectAttributes redirectAttributes) {
+
+  - In create() and update(), catch InvalidTagsException after
+    SlugAlreadyUsedException:
+
+      } catch (InvalidTagsException e) {
+          bindingResult.rejectValue("tags", "tags.invalid", e.getMessage());
+          return showForm(model);
+      }
+
+  - Use PageNumbers in list() as in HomeController.
+
+  A common mistake: adding the categories only in newPost() and edit().
+  When validation fails, create() and update() render the form again,
+  and the select would be empty. showForm prevents that.
+
+  blog/src/main/java/com/blog/web/AdminCategoryController.java:
+
+    package com.blog.web;
+
+    import com.blog.post.CategoryForm;
+    import com.blog.post.CategoryService;
+    import com.blog.post.InvalidCategoryNameException;
+    import jakarta.validation.Valid;
+    import org.springframework.stereotype.Controller;
+    import org.springframework.ui.Model;
+    import org.springframework.validation.BindingResult;
+    import org.springframework.web.bind.annotation.GetMapping;
+    import org.springframework.web.bind.annotation.ModelAttribute;
+    import org.springframework.web.bind.annotation.PathVariable;
+    import org.springframework.web.bind.annotation.PostMapping;
+    import org.springframework.web.bind.annotation.RequestMapping;
+    import org.springframework.web.servlet.mvc.support.RedirectAttributes;
+
+    @Controller
+    @RequestMapping("/admin/categories")
+    class AdminCategoryController {
+
+        private static final String VIEW = "admin/categories";
+
+        private final CategoryService categoryService;
+
+        AdminCategoryController(CategoryService categoryService) {
+            this.categoryService = categoryService;
+        }
+
+        @GetMapping
+        String list(Model model) {
+            model.addAttribute("category", new CategoryForm());
+            return showList(model);
+        }
+
+        @PostMapping
+        String create(@Valid @ModelAttribute("category") CategoryForm form, BindingResult bindingResult,
+                      Model model, RedirectAttributes redirectAttributes) {
+            if (bindingResult.hasErrors()) {
+                return showList(model);
+            }
+            try {
+                categoryService.create(form);
+            } catch (InvalidCategoryNameException e) {
+                bindingResult.rejectValue("name", "name.invalid", e.getMessage());
+                return showList(model);
+            }
+            redirectAttributes.addFlashAttribute("message", "Category created");
+            return "redirect:/admin/categories";
+        }
+
+        @PostMapping("/{id}/delete")
+        String delete(@PathVariable Long id, RedirectAttributes redirectAttributes) {
+            categoryService.delete(id);
+            redirectAttributes.addFlashAttribute("message", "Category deleted");
+            return "redirect:/admin/categories";
+        }
+
+        private String showList(Model model) {
+            model.addAttribute("categories", categoryService.findAll());
+            return VIEW;
+        }
+    }
+
+  No security changes are needed: /admin/** already requires ADMIN, and
+  /categories and /tags fall under permitAll().
+
+3.9 Templates
+
+  In blog/src/main/resources/templates/fragments/layout.html, add these
+  fragments after the header:
+
+    <nav th:fragment="admin-nav(active)" class="admin-nav" aria-label="Admin">
+        <a th:href="@{/admin/posts}" th:classappend="${active == 'posts'} ? 'is-active'">Posts</a>
+        <a th:href="@{/admin/categories}" th:classappend="${active == 'categories'} ? 'is-active'">Categories</a>
+    </nav>
+
+  And after the flash fragment:
+
+    <article th:fragment="post-card(post)" class="post-card">
+        <h2 class="post-card__title">
+            <a th:href="@{/posts/{slug}(slug=${post.slug})}" th:text="${post.title}">Post title</a>
+        </h2>
+        <p class="post-meta">
+            <time th:datetime="${#temporals.formatISO(post.publishedAt)}"
+                  th:text="${#temporals.format(post.publishedAt, 'd MMMM yyyy')}">1 January 2026</time>
+            in <a th:href="@{/categories/{slug}(slug=${post.category.slug})}" th:text="${post.category.name}">Category</a>
+        </p>
+        <p class="post-card__summary" th:if="${post.summary}" th:text="${post.summary}">Summary</p>
+        <ul th:replace="~{fragments/layout :: tag-list(${post.tags})}"></ul>
+    </article>
+
+    <ul th:fragment="tag-list(tags)" th:unless="${#lists.isEmpty(tags)}" class="tag-list" aria-label="Tags">
+        <li th:each="tag : ${tags}">
+            <a class="tag" th:href="@{/tags/{slug}(slug=${tag.slug})}" th:text="|#${tag.name}|">#tag</a>
+        </li>
+    </ul>
+
+  In blog/src/main/resources/templates/home.html, replace the whole
+  <article th:each=...> block with:
+
+    <th:block th:each="post : ${posts}">
+        <article th:replace="~{fragments/layout :: post-card(${post})}"></article>
+    </th:block>
+
+  The loop is on a separate th:block on purpose. On a single element,
+  Thymeleaf processes th:replace before th:each, so ${post} would not
+  exist yet when the fragment is inserted.
+
+  Create blog/src/main/resources/templates/post-list.html:
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head th:replace="~{fragments/layout :: head(${heading})}"></head>
+    <body>
+    <header th:replace="~{fragments/layout :: header('')}"></header>
+
+    <main class="container">
+        <h1 class="page-title" th:text="${heading}">Posts in Spring</h1>
+
+        <p th:if="${posts.isEmpty()}" class="empty-state">No posts have been published here yet.</p>
+
+        <th:block th:each="post : ${posts}">
+            <article th:replace="~{fragments/layout :: post-card(${post})}"></article>
+        </th:block>
+
+        <nav th:replace="~{fragments/layout :: pagination(${posts}, ${baseUrl})}"></nav>
+
+        <p><a th:href="@{/}">&larr; All posts</a></p>
+    </main>
+
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+    </body>
+    </html>
+
+  The pagination fragment from step 003 already takes a base URL, so the
+  page links stay on the category (/categories/spring?page=2).
+
+  In blog/src/main/resources/templates/post.html, replace the <time>
+  element in the header with:
+
+    <p class="post-meta">
+        <time th:if="${post.publishedAt}"
+              th:datetime="${#temporals.formatISO(post.publishedAt)}"
+              th:text="${#temporals.format(post.publishedAt, 'd MMMM yyyy')}">1 January 2026</time>
+        <th:block th:if="${post.publishedAt}">in</th:block>
+        <a th:href="@{/categories/{slug}(slug=${post.category.slug})}" th:text="${post.category.name}">Category</a>
+    </p>
+
+  And add the tags after the content <div>, inside the <article>:
+
+    <ul th:replace="~{fragments/layout :: tag-list(${post.tags})}"></ul>
+
+  (Draft previews have no date, so "in" is only shown with a date.)
+
+  In blog/src/main/resources/templates/admin/posts.html:
+  - Add the admin navigation as the first element in <main>:
+
+      <nav th:replace="~{fragments/layout :: admin-nav('posts')}"></nav>
+
+  - Add a column header after Title:
+
+      <th scope="col">Category</th>
+
+  - And the cell after the title cell:
+
+      <td th:text="${post.categoryName}">General</td>
+
+  In blog/src/main/resources/templates/admin/post-form.html, add these
+  fields before the summary field:
+
+    <div class="form__field">
+        <label for="categoryId">Category</label>
+        <select th:field="*{categoryId}" required th:errorclass="is-invalid" aria-describedby="categoryId-help categoryId-error">
+            <option value="">Choose a category</option>
+            <option th:each="category : ${categories}" th:value="${category.id}" th:text="${category.name}">General</option>
+        </select>
+        <p id="categoryId-help" class="form__help">
+            To add a category, go to <a th:href="@{/admin/categories}">Categories</a>. Unsaved changes here are lost.
+        </p>
+        <p th:if="${#fields.hasErrors('categoryId')}" th:errors="*{categoryId}" id="categoryId-error" class="form__error">Error</p>
+    </div>
+
+    <div class="form__field">
+        <label for="tags">Tags <span class="form__optional">(optional)</span></label>
+        <input type="text" th:field="*{tags}" maxlength="500"
+               th:errorclass="is-invalid" aria-describedby="tags-help tags-error">
+        <p id="tags-help" class="form__help">
+            Separate tags with commas, for example: spring boot, testing. New tags are created when you save.
+            <th:block th:unless="${#lists.isEmpty(existingTags)}">
+                Existing tags: <span th:text="${#strings.listJoin(existingTags, ', ')}">java, mysql</span>.
+            </th:block>
+        </p>
+        <p th:if="${#fields.hasErrors('tags')}" th:errors="*{tags}" id="tags-error" class="form__error">Error</p>
+    </div>
+
+  th:field on a <select> marks the option whose th:value matches
+  categoryId as selected, so the edit form shows the current category.
+
+  Create blog/src/main/resources/templates/admin/categories.html:
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head th:replace="~{fragments/layout :: head('Admin: categories')}"></head>
+    <body>
+    <header th:replace="~{fragments/layout :: header('admin')}"></header>
+
+    <main class="container container--wide">
+        <nav th:replace="~{fragments/layout :: admin-nav('categories')}"></nav>
+
+        <h1 class="page-title">Categories</h1>
+
+        <p th:replace="~{fragments/layout :: flash}"></p>
+
+        <table class="admin-table">
+            <thead>
+            <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Posts</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr th:each="category : ${categories}">
+                <td>
+                    <a th:href="@{/categories/{slug}(slug=${category.slug})}" th:text="${category.name}">General</a>
+                    <div class="admin-table__slug" th:text="|/categories/${category.slug}|">/categories/general</div>
+                </td>
+                <td th:text="${category.postCount}">3</td>
+                <td class="admin-table__actions">
+                    <form th:unless="${category.inUse()}" th:action="@{/admin/categories/{id}/delete(id=${category.id})}"
+                          method="post" th:data-name="${category.name}"
+                          onsubmit="return confirm('Delete the category &quot;' + this.dataset.name + '&quot;?')">
+                        <button type="submit" class="link-button link-button--danger">Delete</button>
+                    </form>
+                    <span th:if="${category.inUse()}" class="form__help">Move its posts to delete it</span>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+
+        <form class="form form--inline" method="post" th:action="@{/admin/categories}" th:object="${category}">
+            <h2 class="form__title">Add a category</h2>
+            <div class="form__field">
+                <label for="name">Name</label>
+                <input type="text" th:field="*{name}" maxlength="50" required
+                       th:errorclass="is-invalid" aria-describedby="name-error">
+                <p th:if="${#fields.hasErrors('name')}" th:errors="*{name}" id="name-error" class="form__error">Error</p>
+            </div>
+            <div class="form__actions">
+                <button type="submit" class="button">Add</button>
+            </div>
+        </form>
+    </main>
+
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+    </body>
+    </html>
+
+3.10 Styles
+
+  In blog/src/main/resources/static/css/main.css:
+  - Replace .post-card__date and .post__date (no longer used) with:
+
+    .post-meta {
+        margin: 0;
+        color: var(--color-muted);
+        font-size: 0.875rem;
+    }
+
+    .post-meta a {
+        color: inherit;
+    }
+
+    .post-meta a:hover {
+        color: var(--color-accent);
+    }
+
+    .tag-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin: 0.75rem 0 0;
+        padding: 0;
+        list-style: none;
+    }
+
+    .tag {
+        display: inline-block;
+        padding: 0.1rem 0.6rem;
+        border-radius: 999px;
+        background: #eef0f4;
+        color: var(--color-text);
+        font-size: 0.8125rem;
+        text-decoration: none;
+    }
+
+    .tag:hover {
+        background: var(--color-accent);
+        color: #ffffff;
+    }
+
+  - Under /* Admin */:
+
+    .admin-nav {
+        display: flex;
+        gap: 1.25rem;
+        margin-bottom: 1.5rem;
+        font-size: 0.875rem;
+    }
+
+    .admin-nav a {
+        color: var(--color-muted);
+        text-decoration: none;
+    }
+
+    .admin-nav a.is-active {
+        color: var(--color-text);
+        font-weight: 600;
+    }
+
+  - Add .form__field select to the selectors of the text input rule and
+    of the :focus rule, so the select box looks like the other fields.
+
+  - Before .form__actions:
+
+    .form--inline {
+        max-width: 420px;
+        margin-top: 2rem;
+    }
+
+    .form__title {
+        margin: 0 0 1rem;
+        font-size: 1.25rem;
+    }
+
+3.11 Update the existing tests
+
+  Every test that creates a Post now needs a category. The test database
+  has "General" (008 runs in every context), so load it once per test:
+
+    @Autowired
+    private CategoryRepository categoryRepository;
+
+    private Category general;
+
+    @BeforeEach
+    void loadDefaultCategory() {
+        general = categoryRepository.findBySlug("general").orElseThrow();
+    }
+
+  Then:
+  - PostRepositoryTest, PostServiceTest: new Post(..., "content") becomes
+    new Post(..., "content", general).
+  - PostServiceAdminTest: the form helper becomes an instance method and
+    sets the category:
+
+      private PostForm form(String title, String slug, boolean published) {
+          PostForm form = new PostForm();
+          form.setTitle(title);
+          form.setSlug(slug);
+          form.setCategoryId(general.getId());
+          form.setContent("Some content");
+          form.setPublished(published);
+          return form;
+      }
+
+  - HomeControllerTest, PostControllerTest, AdminPostControllerTest: add
+    the new record components, for example:
+
+      private static final PostSummary POST = new PostSummary(
+              1L, "First post", "first-post", "A short summary", LocalDateTime.of(2026, 9, 1, 9, 0),
+              new CategoryLink("Spring", "spring"), List.of(new TagLink("spring boot", "spring-boot")));
+
+  - AdminPostControllerTest needs a mock for the new dependency, and
+    .param("categoryId", "1") on the POSTs that should succeed:
+
+      @MockitoBean
+      private CategoryService categoryService;
+
+3.12 New tests
+
+  In PostRepositoryTest (also inject TagRepository and EntityManager):
+
+    @Test
+    void findsPublishedPostsByCategory() {
+        Category spring = categoryRepository.save(new Category("Spring", "spring"));
+        savePublished("In spring", spring, List.of());
+        savePublished("In general", general, List.of());
+        postRepository.save(new Post("Draft in spring", "draft-in-spring", null, "content", spring));
+
+        assertThat(postRepository.findByCategory_SlugAndPublishedAtIsNotNull("spring", PageRequest.of(0, 10)))
+                .extracting(Post::getTitle)
+                .containsExactly("In spring");
+    }
+
+    @Test
+    void findsPublishedPostsByTag() {
+        Tag mysql = tagRepository.save(new Tag("mysql", "mysql"));
+        Tag java = tagRepository.save(new Tag("java", "java"));
+        savePublished("Both", general, List.of(mysql, java));
+        savePublished("Only java", general, List.of(java));
+
+        assertThat(postRepository.findByTags_SlugAndPublishedAtIsNotNull("mysql", PageRequest.of(0, 10)))
+                .extracting(Post::getTitle)
+                .containsExactly("Both");
+        assertThat(postRepository.findByTags_SlugAndPublishedAtIsNotNull("java", PageRequest.of(0, 10)).getTotalElements())
+                .isEqualTo(2);
+    }
+
+    @Test
+    void deletesOnlyUnusedTags() {
+        Tag used = tagRepository.save(new Tag("used", "used"));
+        tagRepository.save(new Tag("unused", "unused"));
+        savePublished("Post", general, List.of(used));
+
+        assertThat(tagRepository.deleteUnused()).isEqualTo(1);
+        assertThat(tagRepository.findAll()).extracting(Tag::getSlug).containsExactly("used");
+    }
+
+    @Test
+    void countsPostsPerCategory() {
+        Category empty = categoryRepository.save(new Category("Empty", "empty"));
+        savePublished("One", general, List.of());
+        postRepository.save(new Post("Draft", "draft", null, "content", general));
+
+        assertThat(categoryRepository.findAllWithPostCounts()).containsExactly(
+                new AdminCategoryItem(empty.getId(), "Empty", "empty", 0),
+                new AdminCategoryItem(general.getId(), "General", "general", 2));
+    }
+
+    @Test
+    void foreignKeyKeepsCategoriesWithPosts() {
+        Category spring = categoryRepository.save(new Category("Spring", "spring"));
+        savePublished("In spring", spring, List.of());
+        postRepository.flush();
+
+        // Plain SQL, because Hibernate refuses this delete before the database sees it
+        assertThatThrownBy(() -> entityManager.createNativeQuery("DELETE FROM categories WHERE id = ?")
+                .setParameter(1, spring.getId())
+                .executeUpdate())
+                .isInstanceOf(PersistenceException.class)
+                .hasMessageContaining("fk_posts_category");
+    }
+
+    private void savePublished(String title, Category category, List<Tag> tags) {
+        Post post = new Post(title, title.toLowerCase().replace(' ', '-'), null, "content", category);
+        post.replaceTags(tags);
+        post.publish(LocalDateTime.of(2026, 1, 1, 10, 0));
+        postRepository.save(post);
+    }
+
+  The last test uses SQL on purpose. Deleting through the repository fails
+  inside Hibernate already ("references an unsaved transient instance"),
+  which would not prove that the foreign key exists.
+
+  In PostServiceAdminTest (also inject TagRepository):
+
+    @Test
+    void createsTagsAndReusesExistingOnes() {
+        tagRepository.save(new Tag("Spring Boot", "spring-boot"));
+        PostForm form = form("Title", "", false);
+        form.setTags("spring-boot, MySQL ,  ,mysql");
+
+        Long id = postService.create(form);
+
+        assertThat(postRepository.findById(id).orElseThrow().getTags())
+                .extracting(Tag::getName)
+                .containsExactlyInAnyOrder("Spring Boot", "MySQL");
+        assertThat(tagRepository.count()).isEqualTo(2);
+    }
+
+    @Test
+    void rejectsInvalidTags() {
+        PostForm form = form("Title", "", false);
+        form.setTags("ok, !!!");
+
+        assertThatThrownBy(() -> postService.create(form)).isInstanceOf(InvalidTagsException.class);
+        assertThat(postRepository.count()).isZero();
+    }
+
+    @Test
+    void removesTagsThatNoPostUsesAnyMore() {
+        PostForm form = form("Title", "title", false);
+        form.setTags("keep, drop");
+        Long id = postService.create(form);
+        PostForm other = form("Other", "", false);
+        other.setTags("keep");
+        Long otherId = postService.create(other);
+
+        form.setTags("keep");
+        postService.update(id, form);
+        assertThat(tagRepository.findAll()).extracting(Tag::getSlug).containsExactly("keep");
+
+        postService.delete(id);
+        postService.delete(otherId);
+        assertThat(tagRepository.count()).isZero();
+    }
+
+    @Test
+    void movesPostsToAnotherCategory() {
+        Category spring = categoryRepository.save(new Category("Spring", "spring"));
+        Long id = postService.create(form("Title", "", false));
+        PostForm form = form("Title", "title", false);
+        form.setCategoryId(spring.getId());
+
+        postService.update(id, form);
+
+        assertThat(postRepository.findById(id).orElseThrow().getCategory().getSlug()).isEqualTo("spring");
+    }
+
+    @Test
+    void unknownCategoryIsNotFound() {
+        PostForm form = form("Title", "", false);
+        form.setCategoryId(999L);
+
+        assertThatThrownBy(() -> postService.create(form)).isInstanceOf(CategoryNotFoundException.class);
+    }
+
+  Also extend formIsFilledFromThePost: set original.setTags("testing,
+  Java") and expect loaded.getTags() to be "Java, testing" (sorted) and
+  loaded.getCategoryId() to be general.getId().
+
+  In PostServiceTest (also inject TagRepository; savePublished now
+  returns the saved Post):
+
+    @Test
+    void summariesIncludeCategoryAndSortedTags() {
+        Post post = savePublished("Tagged", LocalDateTime.of(2026, 1, 1, 10, 0));
+        post.replaceTags(List.of(tagRepository.save(new Tag("testing", "testing")),
+                tagRepository.save(new Tag("Java", "java"))));
+
+        PostSummary summary = postService.findPublished(1).getContent().getFirst();
+
+        assertThat(summary.category()).isEqualTo(new CategoryLink("General", "general"));
+        assertThat(summary.tags()).extracting(TagLink::name).containsExactly("Java", "testing");
+    }
+
+    @Test
+    void listsPublishedPostsByTag() {
+        Tag mysql = tagRepository.save(new Tag("mysql", "mysql"));
+        savePublished("Tagged", LocalDateTime.of(2026, 1, 1, 10, 0)).replaceTags(List.of(mysql));
+        savePublished("Not tagged", LocalDateTime.of(2026, 1, 2, 10, 0));
+
+        assertThat(postService.getTag("mysql")).isEqualTo(new TagLink("mysql", "mysql"));
+        assertThat(postService.findPublishedByTag("mysql", 1).getContent())
+                .extracting(PostSummary::title)
+                .containsExactly("Tagged");
+    }
+
+    @Test
+    void unknownCategoriesAndTagsAreNotFound() {
+        assertThatThrownBy(() -> postService.getCategory("nope")).isInstanceOf(CategoryNotFoundException.class);
+        assertThatThrownBy(() -> postService.getTag("nope")).isInstanceOf(TagNotFoundException.class);
+    }
+
+  The tags are changed after save() without saving again. The query in
+  findPublished() flushes pending changes first, so it sees them.
+
+  blog/src/test/java/com/blog/post/TagNamesTest.java:
+
+    package com.blog.post;
+
+    import org.junit.jupiter.api.Test;
+
+    import java.util.Map;
+
+    import static org.assertj.core.api.Assertions.assertThat;
+    import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+    class TagNamesTest {
+
+        @Test
+        void splitsOnCommasAndKeysBySlug() {
+            assertThat(TagNames.parse("Spring Boot, testing"))
+                    .containsExactly(Map.entry("spring-boot", "Spring Boot"), Map.entry("testing", "testing"));
+        }
+
+        @Test
+        void ignoresBlanksAndCollapsesWhitespace() {
+            assertThat(TagNames.parse(" ,  spring    boot ,,")).containsExactly(Map.entry("spring-boot", "spring boot"));
+        }
+
+        @Test
+        void keepsTheFirstNameForTheSameSlug() {
+            assertThat(TagNames.parse("MySQL, mysql, my-sql")).containsOnlyKeys("mysql", "my-sql");
+            assertThat(TagNames.parse("MySQL, mysql")).containsExactly(Map.entry("mysql", "MySQL"));
+        }
+
+        @Test
+        void emptyInputMeansNoTags() {
+            assertThat(TagNames.parse("")).isEmpty();
+            assertThat(TagNames.parse(null)).isEmpty();
+        }
+
+        @Test
+        void rejectsLongTags() {
+            assertThatThrownBy(() -> TagNames.parse("x".repeat(TagNames.MAX_LENGTH + 1)))
+                    .isInstanceOf(InvalidTagsException.class)
+                    .hasMessageContaining(TagNames.MAX_LENGTH + " characters");
+        }
+
+        @Test
+        void rejectsTagsWithoutLettersOrDigits() {
+            assertThatThrownBy(() -> TagNames.parse("ok, ???"))
+                    .isInstanceOf(InvalidTagsException.class)
+                    .hasMessageContaining("\"???\"");
+        }
+
+        @Test
+        void rejectsTooManyTags() {
+            String elevenTags = String.join(",", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k");
+
+            assertThatThrownBy(() -> TagNames.parse(elevenTags))
+                    .isInstanceOf(InvalidTagsException.class)
+                    .hasMessage("Use at most " + TagNames.MAX_TAGS + " tags");
+        }
+    }
+
+  blog/src/test/java/com/blog/post/CategoryServiceTest.java:
+
+    package com.blog.post;
+
+    import com.blog.TestcontainersConfiguration;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
+    import org.springframework.context.annotation.Import;
+    import org.springframework.test.context.ActiveProfiles;
+
+    import static org.assertj.core.api.Assertions.assertThat;
+    import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+    @DataJpaTest
+    @Import({TestcontainersConfiguration.class, CategoryService.class})
+    @ActiveProfiles("test")
+    class CategoryServiceTest {
+
+        @Autowired
+        private CategoryService categoryService;
+
+        @Autowired
+        private CategoryRepository categoryRepository;
+
+        @Autowired
+        private PostRepository postRepository;
+
+        @Test
+        void createsCategoryWithSlugFromName() {
+            categoryService.create(form("  Grüße aus Köln "));
+
+            Category category = categoryRepository.findBySlug("grusse-aus-koln").orElseThrow();
+            assertThat(category.getName()).isEqualTo("Grüße aus Köln");
+        }
+
+        @Test
+        void listsCategoriesByName() {
+            categoryService.create(form("Spring"));
+            categoryService.create(form("Databases"));
+
+            assertThat(categoryService.findAll()).extracting(AdminCategoryItem::name)
+                    .containsExactly("Databases", "General", "Spring");
+        }
+
+        @Test
+        void rejectsNamesThatGiveAnExistingSlug() {
+            assertThatThrownBy(() -> categoryService.create(form("GENERAL")))
+                    .isInstanceOf(InvalidCategoryNameException.class)
+                    .hasMessage("This category already exists");
+        }
+
+        @Test
+        void rejectsNamesWithoutLettersOrDigits() {
+            assertThatThrownBy(() -> categoryService.create(form("???")))
+                    .isInstanceOf(InvalidCategoryNameException.class);
+        }
+
+        @Test
+        void deletesEmptyCategories() {
+            categoryService.create(form("Empty"));
+            Long id = categoryRepository.findBySlug("empty").orElseThrow().getId();
+
+            categoryService.delete(id);
+
+            assertThat(categoryRepository.existsById(id)).isFalse();
+        }
+
+        @Test
+        void refusesToDeleteCategoriesWithPosts() {
+            Category general = categoryRepository.findBySlug("general").orElseThrow();
+            postRepository.save(new Post("Draft", "draft", null, "content", general));
+
+            assertThatThrownBy(() -> categoryService.delete(general.getId()))
+                    .isInstanceOf(CategoryInUseException.class);
+        }
+
+        @Test
+        void unknownIdIsNotFound() {
+            assertThatThrownBy(() -> categoryService.delete(999L)).isInstanceOf(CategoryNotFoundException.class);
+        }
+
+        private static CategoryForm form(String name) {
+            CategoryForm form = new CategoryForm();
+            form.setName(name);
+            return form;
+        }
+    }
+
+  blog/src/test/java/com/blog/web/PostListControllerTest.java:
+
+    package com.blog.web;
+
+    import com.blog.post.CategoryLink;
+    import com.blog.post.CategoryNotFoundException;
+    import com.blog.post.PostService;
+    import com.blog.post.PostSummary;
+    import com.blog.post.TagLink;
+    import com.blog.post.TagNotFoundException;
+    import com.blog.security.SecurityConfig;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+    import org.springframework.context.annotation.Import;
+    import org.springframework.data.domain.Page;
+    import org.springframework.data.domain.PageImpl;
+    import org.springframework.data.domain.PageRequest;
+    import org.springframework.test.context.bean.override.mockito.MockitoBean;
+    import org.springframework.test.web.servlet.MockMvc;
+
+    import java.time.LocalDateTime;
+    import java.util.List;
+
+    import static org.hamcrest.Matchers.containsString;
+    import static org.mockito.BDDMockito.given;
+    import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
+
+    @WebMvcTest(PostListController.class)
+    @Import(SecurityConfig.class)
+    class PostListControllerTest {
+
+        private static final CategoryLink SPRING = new CategoryLink("Spring", "spring");
+        private static final TagLink MYSQL = new TagLink("mysql", "mysql");
+        private static final PostSummary POST = new PostSummary(
+                1L, "First post", "first-post", null, LocalDateTime.of(2026, 9, 1, 9, 0), SPRING, List.of(MYSQL));
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @MockitoBean
+        private PostService postService;
+
+        @Test
+        void listsPostsInACategory() throws Exception {
+            given(postService.getCategory("spring")).willReturn(SPRING);
+            given(postService.findPublishedByCategory("spring", 1)).willReturn(pageOf(1, 1));
+
+            mockMvc.perform(get("/categories/spring"))
+                    .andExpect(status().isOk())
+                    .andExpect(view().name("post-list"))
+                    .andExpect(content().string(containsString("<title>Posts in Spring | Blog</title>")))
+                    .andExpect(content().string(containsString("href=\"/posts/first-post\"")));
+        }
+
+        @Test
+        void listsPostsWithATag() throws Exception {
+            given(postService.getTag("mysql")).willReturn(MYSQL);
+            given(postService.findPublishedByTag("mysql", 1)).willReturn(pageOf(1, 1));
+
+            mockMvc.perform(get("/tags/mysql"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("Posts tagged #mysql")))
+                    .andExpect(content().string(containsString("href=\"/posts/first-post\"")));
+        }
+
+        @Test
+        void paginationStaysOnTheCategory() throws Exception {
+            given(postService.getCategory("spring")).willReturn(SPRING);
+            given(postService.findPublishedByCategory("spring", 2)).willReturn(pageOf(2, 3));
+
+            mockMvc.perform(get("/categories/spring").param("page", "2"))
+                    .andExpect(content().string(containsString("href=\"/categories/spring\">&larr; Newer posts")))
+                    .andExpect(content().string(containsString("href=\"/categories/spring?page=3\"")));
+        }
+
+        @Test
+        void showsAnEmptyStateForCategoriesWithoutPublishedPosts() throws Exception {
+            given(postService.getCategory("spring")).willReturn(SPRING);
+            given(postService.findPublishedByCategory("spring", 1)).willReturn(Page.empty());
+
+            mockMvc.perform(get("/categories/spring"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("No posts have been published here yet.")));
+        }
+
+        @Test
+        void unknownCategoriesAndTagsAreNotFound() throws Exception {
+            given(postService.getCategory("nope")).willThrow(CategoryNotFoundException.forSlug("nope"));
+            given(postService.getTag("nope")).willThrow(new TagNotFoundException("nope"));
+
+            mockMvc.perform(get("/categories/nope")).andExpect(status().isNotFound());
+            mockMvc.perform(get("/tags/nope")).andExpect(status().isNotFound());
+        }
+
+        @Test
+        void pagesThatCannotExistAreNotFound() throws Exception {
+            given(postService.getTag("mysql")).willReturn(MYSQL);
+            given(postService.findPublishedByTag("mysql", 5)).willReturn(
+                    new PageImpl<>(List.of(), PageRequest.of(4, PostService.PAGE_SIZE), 2L * PostService.PAGE_SIZE));
+
+            mockMvc.perform(get("/tags/mysql").param("page", "0")).andExpect(status().isNotFound());
+            mockMvc.perform(get("/tags/mysql").param("page", "5")).andExpect(status().isNotFound());
+        }
+
+        private static Page<PostSummary> pageOf(int pageNumber, int totalPages) {
+            long totalElements = (long) totalPages * PostService.PAGE_SIZE;
+            return new PageImpl<>(List.of(POST), PageRequest.of(pageNumber - 1, PostService.PAGE_SIZE), totalElements);
+        }
+    }
+
+  The "page 5 of 2" case uses an empty page on purpose: when a PageImpl
+  past the end still has content, it raises its own total to fit, and
+  page 5 would seem to exist.
+
+  blog/src/test/java/com/blog/web/AdminCategoryControllerTest.java:
+
+    package com.blog.web;
+
+    import com.blog.post.AdminCategoryItem;
+    import com.blog.post.CategoryInUseException;
+    import com.blog.post.CategoryService;
+    import com.blog.post.InvalidCategoryNameException;
+    import com.blog.security.SecurityConfig;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+    import org.springframework.context.annotation.Import;
+    import org.springframework.security.test.context.support.WithAnonymousUser;
+    import org.springframework.security.test.context.support.WithMockUser;
+    import org.springframework.test.context.bean.override.mockito.MockitoBean;
+    import org.springframework.test.web.servlet.MockMvc;
+
+    import java.util.List;
+
+    import static org.hamcrest.Matchers.containsString;
+    import static org.hamcrest.Matchers.not;
+    import static org.mockito.ArgumentMatchers.any;
+    import static org.mockito.ArgumentMatchers.argThat;
+    import static org.mockito.BDDMockito.given;
+    import static org.mockito.BDDMockito.willThrow;
+    import static org.mockito.Mockito.never;
+    import static org.mockito.Mockito.verify;
+    import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+    import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+    import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.flash;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.model;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
+
+    @WebMvcTest(AdminCategoryController.class)
+    @Import(SecurityConfig.class)
+    @WithMockUser(roles = "ADMIN")
+    class AdminCategoryControllerTest {
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @MockitoBean
+        private CategoryService categoryService;
+
+        @Test
+        void listsCategoriesAndOnlyLetsEmptyOnesBeDeleted() throws Exception {
+            given(categoryService.findAll()).willReturn(List.of(
+                    new AdminCategoryItem(1L, "General", "general", 3),
+                    new AdminCategoryItem(2L, "Empty", "empty", 0)));
+
+            mockMvc.perform(get("/admin/categories"))
+                    .andExpect(status().isOk())
+                    .andExpect(view().name("admin/categories"))
+                    .andExpect(content().string(containsString("href=\"/categories/general\">General</a>")))
+                    .andExpect(content().string(containsString("action=\"/admin/categories/2/delete\"")))
+                    .andExpect(content().string(not(containsString("action=\"/admin/categories/1/delete\""))));
+        }
+
+        @Test
+        void createsCategoryAndRedirects() throws Exception {
+            mockMvc.perform(post("/admin/categories").with(csrf()).param("name", "Spring"))
+                    .andExpect(redirectedUrl("/admin/categories"))
+                    .andExpect(flash().attribute("message", "Category created"));
+
+            verify(categoryService).create(argThat(form -> form.getName().equals("Spring")));
+        }
+
+        @Test
+        void showsValidationErrors() throws Exception {
+            mockMvc.perform(post("/admin/categories").with(csrf()).param("name", " "))
+                    .andExpect(status().isOk())
+                    .andExpect(model().attributeHasFieldErrors("category", "name"))
+                    .andExpect(content().string(containsString("Enter a name")));
+
+            verify(categoryService, never()).create(any());
+        }
+
+        @Test
+        void showsAnErrorForDuplicateNames() throws Exception {
+            willThrow(new InvalidCategoryNameException("This category already exists")).given(categoryService).create(any());
+
+            mockMvc.perform(post("/admin/categories").with(csrf()).param("name", "General"))
+                    .andExpect(status().isOk())
+                    .andExpect(model().attributeHasFieldErrorCode("category", "name", "name.invalid"))
+                    .andExpect(content().string(containsString("This category already exists")));
+        }
+
+        @Test
+        void deletesCategoryAndRedirects() throws Exception {
+            mockMvc.perform(post("/admin/categories/2/delete").with(csrf()))
+                    .andExpect(redirectedUrl("/admin/categories"))
+                    .andExpect(flash().attribute("message", "Category deleted"));
+
+            verify(categoryService).delete(2L);
+        }
+
+        @Test
+        void deletingACategoryWithPostsIsAConflict() throws Exception {
+            willThrow(new CategoryInUseException("General")).given(categoryService).delete(1L);
+
+            mockMvc.perform(post("/admin/categories/1/delete").with(csrf()))
+                    .andExpect(status().isConflict());
+        }
+
+        @Test
+        @WithAnonymousUser
+        void visitorsAreSentToTheLoginPage() throws Exception {
+            mockMvc.perform(get("/admin/categories"))
+                    .andExpect(redirectedUrl("/login"));
+        }
+    }
+
+  In the existing controller tests, also add:
+  - HomeControllerTest.postCardsLinkToTheirCategoryAndTags: the home page
+    contains href="/categories/spring">Spring</a> and
+    href="/tags/spring-boot">#spring boot</a>.
+  - PostControllerTest.linksToCategoryAndTags, and a tag named "<script>"
+    in escapesHtmlInTitleAndSummary, which must come out as
+    #&lt;script&gt;.
+  - AdminPostControllerTest:
+    - formOffersCategoriesAndExistingTags: with categoryService.findAll()
+      and postService.findAllTagNames() mocked, the form contains
+      <option value="2">Spring</option> and "Existing tags: <span>mysql,
+      spring boot</span>".
+    - requiresACategory: categoryId "" gives the "Choose a category"
+      error, and create() is never called.
+    - showsAnErrorForInvalidTags: when create() throws
+      InvalidTagsException, the message appears and the typed tags are
+      kept.
+
+
+4. VERIFY
+---------
+  a) Run the tests:
+
+       .\mvnw verify
+
+     Expected: "Tests run: 127, Failures: 0" and "BUILD SUCCESS".
+
+  b) Run the application:
+
+       .\mvnw spring-boot:run
+
+     Liquibase runs 4 changesets: 008-create-categories-table,
+     008-add-post-category, 009-create-tags-tables, and
+     010-insert-sample-categories-and-tags.
+
+     Then:
+     1. Open http://localhost:8080. Each card shows "in <category>" and
+        its tags.
+     2. Click "Spring": /categories/spring lists 3 posts. Click "#mysql":
+        /tags/mysql lists 2.
+     3. Open http://localhost:8080/categories/nope. You get "Page not
+        found".
+     4. Log in and click Admin. The list has a Category column, and
+        "Categories" is next to "Posts".
+     5. On Categories, add "Grüße aus Köln". It appears with the slug
+        grusse-aus-koln and 0 posts, and with a Delete button. General
+        has no Delete button. Adding "general" gives "This category
+        already exists".
+     6. Create a post in that category, with the tags
+        "Spring Boot, Brand New Tag". /tags/brand-new-tag lists it, and
+        /tags/spring-boot lists it next to the sample posts (same slug,
+        so the same tag).
+     7. Edit the post: the category is selected, and the tags read
+        "Brand New Tag, spring boot". The second one is the existing
+        sample tag, so it keeps its original name. Remove "Brand New Tag"
+        and save.
+        /tags/brand-new-tag is now "Page not found".
+     8. Try to save with the tags "a, ???": the error is shown next to
+        the field, and nothing is saved.
+     9. Delete the post, then the category.
+
+  c) Optional: watch the queries. With show-sql on, loading the home page
+     logs 4 statements: the posts, the count, one query that loads the
+     categories of all posts on the page, and one for their tags. Comment out
+     default_batch_fetch_size and restart: the same page then logs one
+     category and one tags query per post.
+
+  Troubleshooting
+  - "Schema validation: missing table [categories]" (or post_tags): the
+    changelog files are not in db.changelog-master.xml, or the app ran
+    with an old target/classes. Run .\mvnw clean spring-boot:run.
+  - "LazyInitializationException: could not initialize proxy ... no
+    session": a lazy category or tag was used outside a transaction,
+    usually in a template. Map entities to records inside the service, as
+    PostSummary.from does.
+  - The category select is empty after a validation error: the controller
+    returns FORM_VIEW directly instead of showForm(model).
+  - "Cannot delete or update a parent row: a foreign key constraint
+    fails": a category with posts was deleted directly in the database.
+    Move its posts to another category first.
+  - 409 when deleting a category: it still has posts (a draft counts too).
+    The admin list hides the button in that case, so reload the page.
+
+
+5. COMMIT
+---------
+  git add -A
+  git commit -m "Step 007: Categories and tags, with listing pages and admin pickers"

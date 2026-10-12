@@ -1,6 +1,10 @@
 package com.blog.web;
 
+import com.blog.post.AdminCategoryItem;
 import com.blog.post.AdminPostItem;
+import com.blog.post.CategoryLink;
+import com.blog.post.CategoryService;
+import com.blog.post.InvalidTagsException;
 import com.blog.post.PostDetail;
 import com.blog.post.PostForm;
 import com.blog.post.PostNotFoundException;
@@ -51,16 +55,20 @@ class AdminPostControllerTest {
     @MockitoBean
     private PostService postService;
 
+    @MockitoBean
+    private CategoryService categoryService;
+
     @Test
     void listsAllPostsWithTheirStatus() throws Exception {
         given(postService.findAllForAdmin(1)).willReturn(new PageImpl<>(List.of(
-                new AdminPostItem(1L, "A draft", "a-draft", null, DATE),
-                new AdminPostItem(2L, "A live post", "a-live-post", DATE, DATE))));
+                new AdminPostItem(1L, "A draft", "a-draft", "General", null, DATE),
+                new AdminPostItem(2L, "A live post", "a-live-post", "Databases", DATE, DATE))));
 
         mockMvc.perform(get("/admin/posts"))
                 .andExpect(status().isOk())
                 .andExpect(view().name("admin/posts"))
                 .andExpect(content().string(containsString("A draft")))
+                .andExpect(content().string(containsString("<td>Databases</td>")))
                 .andExpect(content().string(containsString("Draft</span>")))
                 .andExpect(content().string(containsString("href=\"/admin/posts/1/preview\"")))
                 .andExpect(content().string(containsString("href=\"/posts/a-live-post\"")))
@@ -77,10 +85,25 @@ class AdminPostControllerTest {
     }
 
     @Test
+    void formOffersCategoriesAndExistingTags() throws Exception {
+        given(categoryService.findAll()).willReturn(List.of(
+                new AdminCategoryItem(1L, "General", "general", 3),
+                new AdminCategoryItem(2L, "Spring", "spring", 0)));
+        given(postService.findAllTagNames()).willReturn(List.of("mysql", "spring boot"));
+
+        mockMvc.perform(get("/admin/posts/new"))
+                .andExpect(content().string(containsString("<option value=\"\">Choose a category</option>")))
+                .andExpect(content().string(containsString("<option value=\"2\">Spring</option>")))
+                .andExpect(content().string(containsString("Existing tags: <span>mysql, spring boot</span>")));
+    }
+
+    @Test
     void createsPostAndRedirectsWithMessage() throws Exception {
         mockMvc.perform(post("/admin/posts").with(csrf())
                         .param("title", "Hello")
                         .param("slug", "")
+                        .param("categoryId", "2")
+                        .param("tags", "java, testing")
                         .param("content", "Some **Markdown**")
                         .param("published", "true"))
                 .andExpect(status().is3xxRedirection())
@@ -88,7 +111,36 @@ class AdminPostControllerTest {
                 .andExpect(flash().attribute("message", "Post created"));
 
         verify(postService).create(argThat(form ->
-                form.getTitle().equals("Hello") && form.isPublished() && form.getContent().equals("Some **Markdown**")));
+                form.getTitle().equals("Hello") && form.isPublished() && form.getContent().equals("Some **Markdown**")
+                        && form.getCategoryId() == 2L && form.getTags().equals("java, testing")));
+    }
+
+    @Test
+    void requiresACategory() throws Exception {
+        mockMvc.perform(post("/admin/posts").with(csrf())
+                        .param("title", "Hello")
+                        .param("categoryId", "")
+                        .param("content", "Content"))
+                .andExpect(status().isOk())
+                .andExpect(model().attributeHasFieldErrors("post", "categoryId"))
+                .andExpect(content().string(containsString("Choose a category</p>")));
+
+        verify(postService, never()).create(any());
+    }
+
+    @Test
+    void showsAnErrorForInvalidTags() throws Exception {
+        willThrow(new InvalidTagsException("Use at most 10 tags")).given(postService).create(any());
+
+        mockMvc.perform(post("/admin/posts").with(csrf())
+                        .param("title", "Hello")
+                        .param("categoryId", "1")
+                        .param("tags", "a, b")
+                        .param("content", "Content"))
+                .andExpect(status().isOk())
+                .andExpect(model().attributeHasFieldErrorCode("post", "tags", "tags.invalid"))
+                .andExpect(content().string(containsString("Use at most 10 tags")))
+                .andExpect(content().string(containsString("value=\"a, b\"")));
     }
 
     @Test
@@ -114,6 +166,7 @@ class AdminPostControllerTest {
         mockMvc.perform(post("/admin/posts").with(csrf())
                         .param("title", "Hello")
                         .param("slug", "taken")
+                        .param("categoryId", "1")
                         .param("content", "Content"))
                 .andExpect(status().isOk())
                 .andExpect(model().attributeHasFieldErrorCode("post", "slug", "slug.taken"))
@@ -140,6 +193,7 @@ class AdminPostControllerTest {
         mockMvc.perform(post("/admin/posts/7").with(csrf())
                         .param("title", "Changed")
                         .param("slug", "changed")
+                        .param("categoryId", "1")
                         .param("content", "Content"))
                 .andExpect(redirectedUrl("/admin/posts"))
                 .andExpect(flash().attribute("message", "Post saved"));
@@ -166,7 +220,8 @@ class AdminPostControllerTest {
 
     @Test
     void previewsDrafts() throws Exception {
-        given(postService.getPreview(7L)).willReturn(new PostDetail("Draft", "draft", null, "<p>Body</p>", null));
+        given(postService.getPreview(7L)).willReturn(new PostDetail("Draft", "draft", null, "<p>Body</p>", null,
+                new CategoryLink("General", "general"), List.of()));
 
         mockMvc.perform(get("/admin/posts/7/preview"))
                 .andExpect(status().isOk())

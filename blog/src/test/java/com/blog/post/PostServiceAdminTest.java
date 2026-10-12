@@ -2,6 +2,7 @@ package com.blog.post;
 
 import com.blog.TestcontainersConfiguration;
 import com.blog.markdown.MarkdownRenderer;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -22,7 +23,20 @@ class PostServiceAdminTest {
     private PostRepository postRepository;
 
     @Autowired
+    private CategoryRepository categoryRepository;
+
+    @Autowired
+    private TagRepository tagRepository;
+
+    @Autowired
     private PostService postService;
+
+    private Category general;
+
+    @BeforeEach
+    void loadDefaultCategory() {
+        general = categoryRepository.findBySlug("general").orElseThrow();
+    }
 
     @Test
     void createsDraftWithSlugFromTitle() {
@@ -31,6 +45,7 @@ class PostServiceAdminTest {
         Post post = postRepository.findById(id).orElseThrow();
         assertThat(post.getSlug()).isEqualTo("my-first-post");
         assertThat(post.isPublished()).isFalse();
+        assertThat(post.getCategory().getSlug()).isEqualTo("general");
     }
 
     @Test
@@ -78,7 +93,7 @@ class PostServiceAdminTest {
     @Test
     void updatesFieldsAndKeepsTheOriginalPublishDate() {
         LocalDateTime originalDate = LocalDateTime.of(2026, 1, 1, 10, 0);
-        Post post = new Post("Old title", "old-title", null, "old");
+        Post post = new Post("Old title", "old-title", null, "old", general);
         post.publish(originalDate);
         Long id = postRepository.save(post).getId();
 
@@ -136,6 +151,67 @@ class PostServiceAdminTest {
     }
 
     @Test
+    void unknownCategoryIsNotFound() {
+        PostForm form = form("Title", "", false);
+        form.setCategoryId(999L);
+
+        assertThatThrownBy(() -> postService.create(form)).isInstanceOf(CategoryNotFoundException.class);
+    }
+
+    @Test
+    void movesPostsToAnotherCategory() {
+        Category spring = categoryRepository.save(new Category("Spring", "spring"));
+        Long id = postService.create(form("Title", "", false));
+        PostForm form = form("Title", "title", false);
+        form.setCategoryId(spring.getId());
+
+        postService.update(id, form);
+
+        assertThat(postRepository.findById(id).orElseThrow().getCategory().getSlug()).isEqualTo("spring");
+    }
+
+    @Test
+    void createsTagsAndReusesExistingOnes() {
+        tagRepository.save(new Tag("Spring Boot", "spring-boot"));
+        PostForm form = form("Title", "", false);
+        form.setTags("spring-boot, MySQL ,  ,mysql");
+
+        Long id = postService.create(form);
+
+        assertThat(postRepository.findById(id).orElseThrow().getTags())
+                .extracting(Tag::getName)
+                .containsExactlyInAnyOrder("Spring Boot", "MySQL");
+        assertThat(tagRepository.count()).isEqualTo(2);
+    }
+
+    @Test
+    void rejectsInvalidTags() {
+        PostForm form = form("Title", "", false);
+        form.setTags("ok, !!!");
+
+        assertThatThrownBy(() -> postService.create(form)).isInstanceOf(InvalidTagsException.class);
+        assertThat(postRepository.count()).isZero();
+    }
+
+    @Test
+    void removesTagsThatNoPostUsesAnyMore() {
+        PostForm form = form("Title", "title", false);
+        form.setTags("keep, drop");
+        Long id = postService.create(form);
+        PostForm other = form("Other", "", false);
+        other.setTags("keep");
+        Long otherId = postService.create(other);
+
+        form.setTags("keep");
+        postService.update(id, form);
+        assertThat(tagRepository.findAll()).extracting(Tag::getSlug).containsExactly("keep");
+
+        postService.delete(id);
+        postService.delete(otherId);
+        assertThat(tagRepository.count()).isZero();
+    }
+
+    @Test
     void adminListIncludesDrafts() {
         postService.create(form("Draft", "", false));
         postService.create(form("Published", "", true));
@@ -156,21 +232,25 @@ class PostServiceAdminTest {
     void formIsFilledFromThePost() {
         PostForm original = form("Title", "slug", true);
         original.setSummary("Summary");
+        original.setTags("testing, Java");
         Long id = postService.create(original);
 
         PostForm loaded = postService.getForm(id);
 
         assertThat(loaded.getTitle()).isEqualTo("Title");
         assertThat(loaded.getSlug()).isEqualTo("slug");
+        assertThat(loaded.getCategoryId()).isEqualTo(general.getId());
+        assertThat(loaded.getTags()).isEqualTo("Java, testing");
         assertThat(loaded.getSummary()).isEqualTo("Summary");
         assertThat(loaded.getContent()).isEqualTo("Some content");
         assertThat(loaded.isPublished()).isTrue();
     }
 
-    private static PostForm form(String title, String slug, boolean published) {
+    private PostForm form(String title, String slug, boolean published) {
         PostForm form = new PostForm();
         form.setTitle(title);
         form.setSlug(slug);
+        form.setCategoryId(general.getId());
         form.setContent("Some content");
         form.setPublished(published);
         return form;

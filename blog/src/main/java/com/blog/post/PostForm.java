@@ -1,8 +1,11 @@
 package com.blog.post;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
+
+import java.util.stream.Collectors;
 
 /**
  * The fields an author can edit. A mutable bean, because Spring MVC binds
@@ -19,6 +22,15 @@ public class PostForm {
             message = "Use only lowercase letters, digits, and single dashes between words")
     private String slug = "";
 
+    @NotNull(message = "Choose a category")
+    private Long categoryId;
+
+    /**
+     * Comma-separated tag names, for example "spring boot, testing".
+     */
+    @Size(max = 500, message = "Use fewer tags")
+    private String tags = "";
+
     @Size(max = 500, message = "Keep the summary under 500 characters")
     private String summary = "";
 
@@ -32,6 +44,10 @@ public class PostForm {
         PostForm form = new PostForm();
         form.setTitle(post.getTitle());
         form.setSlug(post.getSlug());
+        form.setCategoryId(post.getCategory().getId());
+        form.setTags(TagLink.sorted(post.getTags()).stream()
+                .map(TagLink::name)
+                .collect(Collectors.joining(", ")));
         form.setSummary(post.getSummary() == null ? "" : post.getSummary());
         form.setContent(post.getContent());
         form.setPublished(post.isPublished());
@@ -52,6 +68,22 @@ public class PostForm {
 
     public void setSlug(String slug) {
         this.slug = slug;
+    }
+
+    public Long getCategoryId() {
+        return categoryId;
+    }
+
+    public void setCategoryId(Long categoryId) {
+        this.categoryId = categoryId;
+    }
+
+    public String getTags() {
+        return tags;
+    }
+
+    public void setTags(String tags) {
+        this.tags = tags;
     }
 
     public String getSummary() {
