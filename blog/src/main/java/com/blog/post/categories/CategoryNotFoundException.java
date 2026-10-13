@@ -1,4 +1,4 @@
-package com.blog.post;
+package com.blog.post.categories;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.ResponseStatus;

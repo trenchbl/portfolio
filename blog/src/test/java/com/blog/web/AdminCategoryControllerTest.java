@@ -1,9 +1,9 @@
 package com.blog.web;
 
-import com.blog.post.AdminCategoryItem;
-import com.blog.post.CategoryInUseException;
-import com.blog.post.CategoryService;
-import com.blog.post.InvalidCategoryNameException;
+import com.blog.post.categories.AdminCategoryItem;
+import com.blog.post.categories.CategoryInUseException;
+import com.blog.post.categories.CategoryService;
+import com.blog.post.categories.InvalidCategoryNameException;
 import com.blog.security.SecurityConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

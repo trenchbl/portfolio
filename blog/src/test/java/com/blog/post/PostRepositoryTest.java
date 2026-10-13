@@ -1,6 +1,11 @@
 package com.blog.post;
 
 import com.blog.TestcontainersConfiguration;
+import com.blog.post.categories.AdminCategoryItem;
+import com.blog.post.categories.Category;
+import com.blog.post.categories.CategoryRepository;
+import com.blog.post.tags.Tag;
+import com.blog.post.tags.TagRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceException;
 import org.junit.jupiter.api.BeforeEach;

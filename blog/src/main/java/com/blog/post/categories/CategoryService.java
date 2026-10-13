@@ -1,5 +1,7 @@
-package com.blog.post;
+package com.blog.post.categories;
 
+import com.blog.post.PostRepository;
+import com.blog.post.Slugs;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 

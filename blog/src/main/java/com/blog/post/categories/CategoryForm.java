@@ -1,4 +1,4 @@
-package com.blog.post;
+package com.blog.post.categories;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;

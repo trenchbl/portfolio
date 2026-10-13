@@ -1,4 +1,4 @@
-package com.blog.post;
+package com.blog.post.tags;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -8,7 +8,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
-interface TagRepository extends JpaRepository<Tag, Long> {
+public interface TagRepository extends JpaRepository<Tag, Long> {
 
     Optional<Tag> findBySlug(String slug);
 

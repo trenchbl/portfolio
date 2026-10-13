@@ -1,6 +1,6 @@
 package com.blog.web;
 
-import com.blog.post.CategoryLink;
+import com.blog.post.categories.CategoryLink;
 import com.blog.post.PostService;
 import com.blog.post.PostSummary;
 import com.blog.security.SecurityConfig;

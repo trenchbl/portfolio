@@ -2,6 +2,14 @@ package com.blog.post;
 
 import com.blog.TestcontainersConfiguration;
 import com.blog.markdown.MarkdownRenderer;
+import com.blog.post.categories.Category;
+import com.blog.post.categories.CategoryLink;
+import com.blog.post.categories.CategoryNotFoundException;
+import com.blog.post.categories.CategoryRepository;
+import com.blog.post.tags.Tag;
+import com.blog.post.tags.TagLink;
+import com.blog.post.tags.TagNotFoundException;
+import com.blog.post.tags.TagRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

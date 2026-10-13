@@ -1,8 +1,8 @@
-package com.blog.post;
+package com.blog.post.categories;
 
 public record CategoryLink(String name, String slug) {
 
-    static CategoryLink from(Category category) {
+    public static CategoryLink from(Category category) {
         return new CategoryLink(category.getName(), category.getSlug());
     }
 }
