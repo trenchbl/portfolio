@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('Admin: categories')}"></head>
+<body>
+<header th:replace="~{fragments/layout :: header('admin')}"></header>
+
+<main class="container container--wide">
+    <nav th:replace="~{fragments/layout :: admin-nav('categories')}"></nav>
+
+    <h1 class="page-title">Categories</h1>
+
+    <p th:replace="~{fragments/layout :: flash}"></p>
+
+    <table class="admin-table">
+        <thead>
+        <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Posts</th>
+            <th scope="col"><span class="visually-hidden">Actions</span></th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="category : ${categories}">
+            <td>
+                <a th:href="@{/categories/{slug}(slug=${category.slug})}" th:text="${category.name}">General</a>
+                <div class="admin-table__slug" th:text="|/categories/${category.slug}|">/categories/general</div>
+            </td>
+            <td th:text="${category.postCount}">3</td>
+            <td class="admin-table__actions">
+                <form th:unless="${category.inUse()}" th:action="@{/admin/categories/{id}/delete(id=${category.id})}"
+                      method="post" th:data-name="${category.name}"
+                      onsubmit="return confirm('Delete the category &quot;' + this.dataset.name + '&quot;?')">
+                    <button type="submit" class="link-button link-button--danger">Delete</button>
+                </form>
+                <span th:if="${category.inUse()}" class="form__help">Move its posts to delete it</span>
+            </td>
+        </tr>
+        </tbody>
+    </table>
+
+    <form class="form form--inline" method="post" th:action="@{/admin/categories}" th:object="${category}">
+        <h2 class="form__title">Add a category</h2>
+        <div class="form__field">
+            <label for="name">Name</label>
+            <input type="text" th:field="*{name}" maxlength="50" required
+                   th:errorclass="is-invalid" aria-describedby="name-error">
+            <p th:if="${#fields.hasErrors('name')}" th:errors="*{name}" id="name-error" class="form__error">Error</p>
+        </div>
+        <div class="form__actions">
+            <button type="submit" class="button">Add</button>
+        </div>
+    </form>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>

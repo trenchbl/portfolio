@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('Access denied')}"></head>
+<body>
+<header th:replace="~{fragments/layout :: header('')}"></header>
+
+<main class="container">
+    <h1 class="page-title">Access denied</h1>
+    <p>You do not have permission to open this page, or the form expired. Go back, reload the page, and try again.</p>
+    <p><a th:href="@{/}">&larr; Back to the home page</a></p>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>

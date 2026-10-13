@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <changeSet id="005-insert-markdown-sample-post" author="blog" contextFilter="dev">
+        <insert tableName="posts">
+            <column name="title" value="Writing posts in Markdown"/>
+            <column name="slug" value="writing-posts-in-markdown"/>
+            <column name="summary" value="A tour of the Markdown features this blog supports."/>
+            <column name="content"><![CDATA[Posts are written in **Markdown** and rendered to HTML when the page is shown.
+
+## Text
+
+You can use *emphasis*, **bold**, ~~strikethrough~~, and `inline code`. Plain URLs such as https://commonmark.org become links automatically, and so do [named links](https://spring.io).
+
+> Blockquotes are useful for quoting documentation or other people.
+
+## Lists
+
+1. Ordered lists
+2. are numbered
+   - and can contain
+   - nested lists
+
+## Code
+
+```java
+@GetMapping("/posts/{slug}")
+String post(@PathVariable String slug, Model model) {
+    model.addAttribute("post", postService.findPublishedBySlug(slug));
+    return "post";
+}
+```
+
+## Tables
+
+| Feature       | Syntax          |
+|---------------|-----------------|
+| Bold          | `**text**`      |
+| Strikethrough | `~~text~~`      |
+| Link          | `[text](url)`   |
+
+## Safety
+
+Raw HTML is shown as text instead of being run, so this is harmless: <script>alert('hi')</script>]]></column>
+            <column name="published_at" valueDate="2026-10-05T10:00:00"/>
+            <column name="created_at" valueDate="2026-10-05T10:00:00"/>
+            <column name="updated_at" valueDate="2026-10-05T10:00:00"/>
+        </insert>
+    </changeSet>
+
+</databaseChangeLog>

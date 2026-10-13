@@ -1,0 +1,1564 @@
+STEP 005 - ADMIN: CREATE, EDIT, AND DELETE POSTS
+================================================
+
+
+1. GOAL
+-------
+At the end of this step you will have:
+- An admin area at /admin/posts listing all posts, drafts included, with
+  their status
+- A form to create and edit posts, with validation messages next to each
+  field and nothing lost when there is a mistake
+- Slugs generated from the title ("Grüße aus Köln" becomes
+  "grusse-aus-koln"), or typed in by hand
+- Publish and unpublish through a checkbox, previews of drafts, and delete
+  with a confirmation
+- "Post created", "Post saved", and "Post deleted" messages after each action
+- The content column widened so long posts fit
+
+WARNING: anyone who can reach the app can use /admin until step 006 adds
+login. Only run this step on your own machine.
+
+
+2. CONCEPTS
+-----------
+Post/Redirect/Get
+  Every change is a POST. When it succeeds, the controller answers with a
+  redirect to the list page instead of rendering a page directly. The
+  browser then loads the list with a GET. Refreshing that page only repeats
+  the harmless GET, never the POST, so a reload cannot create a post twice.
+  When validation fails, there is no redirect: the controller renders the
+  form again, with the input and the errors, in the same response.
+
+Flash attributes
+  A redirect starts a new request, so a normal model attribute would be
+  lost. RedirectAttributes.addFlashAttribute stores the message in the
+  session just long enough for the next request to show it, then removes
+  it. That is why the "Post saved" message disappears on reload.
+
+Never change data with GET
+  Delete is a small form with a POST button, not a link. Browsers, link
+  previews, and crawlers follow links freely, and a GET /delete link could
+  delete posts nobody meant to delete. This also matters for step 006: CSRF
+  protection covers POST requests, not GET.
+
+The form object
+  PostForm holds exactly the fields an author can edit, with Bean
+  Validation rules (@NotBlank, @Size, @Pattern). The controller validates
+  it with @Valid, and Spring puts the errors in BindingResult, which
+  Thymeleaf shows next to each field. The entity never receives
+  half-validated input, and fields that must not be edited through the form
+  (id, timestamps) cannot be set by a crafted request.
+  PostForm is a mutable class with getters and setters, because Spring
+  binds request parameters through setters and th:field reads values
+  through getters.
+
+Two kinds of validation
+  - Field rules (is the title empty? is the slug well-formed?) are
+    annotations on PostForm and are checked before the service is called.
+  - Rules that need the database (is the slug free?) are checked in the
+    service, which throws SlugAlreadyUsedException. The controller turns
+    that into an error on the slug field, so it looks like any other
+    validation message.
+  The unique constraint from step 003 is the final safety net: if two
+  authors save the same slug at exactly the same moment, the database
+  rejects the second one.
+
+Choosing the slug
+  If the author types a slug, it must be free, or they get an error. They
+  chose it on purpose, so silently changing it would be surprising. If the
+  slug field is empty, a slug is generated from the title and gets "-2",
+  "-3", and so on until it is free. Slugify turns accented letters into
+  plain ones (é becomes e) by splitting them into letter plus accent
+  (Unicode NFD) and dropping the accent. Letters like ß and ø have no such
+  split, so a small table maps them (ß becomes ss).
+
+Publishing
+  The checkbox maps to published_at:
+  - checked, and the post was a draft: published_at = now
+  - checked, and the post was already published: unchanged, so editing a
+    typo does not move an old post to the top of the home page
+  - unchecked: published_at = NULL, so the post is a draft again
+
+Checkboxes in HTML forms
+  A browser sends nothing at all for an unchecked checkbox. th:field adds a
+  hidden field named _published. When Spring sees _published without
+  published, it sets the value to false. Without it, unchecking the box
+  would have no effect.
+
+Widening a column on MySQL
+  TEXT holds up to 64 KB. With multi-byte characters, a long post can hit
+  that. MEDIUMTEXT holds 16 MB. Watch out: on MySQL, Liquibase's
+  modifyDataType rewrites the whole column definition and drops NOT NULL,
+  so the changeset adds the constraint back right after.
+
+
+3. INSTRUCTIONS
+---------------
+  Stop the running app before you start (Ctrl+C), so DevTools does not run
+  a half-written changeset.
+
+3.1 Widen the content column
+
+  Create blog/src/main/resources/db/changelog/changes/006-widen-post-content.xml:
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <databaseChangeLog
+            xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+        <changeSet id="006-widen-post-content" author="blog">
+            <modifyDataType tableName="posts" columnName="content" newDataType="MEDIUMTEXT"/>
+            <!-- On MySQL, modifyDataType rewrites the whole column definition and drops NOT NULL -->
+            <addNotNullConstraint tableName="posts" columnName="content" columnDataType="MEDIUMTEXT"/>
+        </changeSet>
+
+    </databaseChangeLog>
+
+  Register it in db.changelog-master.xml:
+
+        <include file="changes/006-widen-post-content.xml" relativeToChangelogFile="true"/>
+
+  In Post.java, change the content column to match:
+
+        @Column(nullable = false, columnDefinition = "MEDIUMTEXT")
+        private String content;
+
+
+3.2 Entity: editing and unpublishing
+
+  In Post.java, add update and unpublish around the existing publish method:
+
+        public void update(String title, String slug, String summary, String content) {
+            this.title = title;
+            this.slug = slug;
+            this.summary = summary;
+            this.content = content;
+        }
+
+        public void publish(LocalDateTime publishedAt) {
+            this.publishedAt = publishedAt;
+        }
+
+        public void unpublish() {
+            this.publishedAt = null;
+        }
+
+  The service never calls a save method after changing a loaded entity.
+  Inside a transaction, Hibernate notices the change (dirty checking) and
+  writes it when the transaction commits.
+
+
+3.3 Slug generation
+
+  Create blog/src/main/java/com/blog/post/Slugs.java:
+
+    package com.blog.post;
+
+    import java.text.Normalizer;
+    import java.util.Locale;
+    import java.util.Map;
+    import java.util.regex.Pattern;
+
+    final class Slugs {
+
+        static final int MAX_LENGTH = 200;
+
+        private static final Pattern DIACRITICS = Pattern.compile("\\p{M}+");
+        private static final Pattern NON_ALPHANUMERIC = Pattern.compile("[^a-z0-9]+");
+        private static final Pattern EDGE_DASHES = Pattern.compile("^-+|-+$");
+
+        // Unicode normalisation splits "é" into "e" plus an accent, but these letters have no such split
+        private static final Map<String, String> LETTERS_WITHOUT_DECOMPOSITION = Map.of(
+                "ß", "ss",
+                "æ", "ae",
+                "œ", "oe",
+                "ø", "o",
+                "đ", "d",
+                "ł", "l");
+
+        private Slugs() {
+        }
+
+        /**
+         * "Café & Crème: Part 2!" becomes "cafe-creme-part-2". Returns an empty
+         * string if the text contains no letters or digits.
+         */
+        static String slugify(String text) {
+            String lowerCase = text.toLowerCase(Locale.ROOT);
+            for (Map.Entry<String, String> letter : LETTERS_WITHOUT_DECOMPOSITION.entrySet()) {
+                lowerCase = lowerCase.replace(letter.getKey(), letter.getValue());
+            }
+            String withoutDiacritics = DIACRITICS.matcher(Normalizer.normalize(lowerCase, Normalizer.Form.NFD)).replaceAll("");
+            String dashed = NON_ALPHANUMERIC.matcher(withoutDiacritics).replaceAll("-");
+            String slug = EDGE_DASHES.matcher(dashed).replaceAll("");
+            if (slug.length() > MAX_LENGTH) {
+                slug = EDGE_DASHES.matcher(slug.substring(0, MAX_LENGTH)).replaceAll("");
+            }
+            return slug;
+        }
+    }
+
+  Notes:
+  - Locale.ROOT makes lower-casing behave the same on every machine. With
+    a Turkish default locale, "I".toLowerCase() would give a dotless ı.
+  - \p{M} matches Unicode "marks", the accents that NFD splits off.
+  - The class is package-private and final with a private constructor. It
+    is a helper for the post package only.
+  - The source file must be saved as UTF-8 because of the ß and ø
+    characters. Maven compiles as UTF-8 by default in Spring Boot projects.
+
+
+3.4 The form object and new exceptions
+
+  Create blog/src/main/java/com/blog/post/PostForm.java:
+
+    package com.blog.post;
+
+    import jakarta.validation.constraints.NotBlank;
+    import jakarta.validation.constraints.Pattern;
+    import jakarta.validation.constraints.Size;
+
+    /**
+     * The fields an author can edit. A mutable bean, because Spring MVC binds
+     * form fields to it and Thymeleaf's th:field reads it back.
+     */
+    public class PostForm {
+
+        @NotBlank(message = "Enter a title")
+        @Size(max = 200, message = "Keep the title under 200 characters")
+        private String title = "";
+
+        @Size(max = Slugs.MAX_LENGTH, message = "Keep the slug under 200 characters")
+        @Pattern(regexp = "^$|^[a-z0-9]+(-[a-z0-9]+)*$",
+                message = "Use only lowercase letters, digits, and single dashes between words")
+        private String slug = "";
+
+        @Size(max = 500, message = "Keep the summary under 500 characters")
+        private String summary = "";
+
+        @NotBlank(message = "Write some content")
+        @Size(max = 1_000_000, message = "The content is too long")
+        private String content = "";
+
+        private boolean published;
+
+        static PostForm from(Post post) {
+            PostForm form = new PostForm();
+            form.setTitle(post.getTitle());
+            form.setSlug(post.getSlug());
+            form.setSummary(post.getSummary() == null ? "" : post.getSummary());
+            form.setContent(post.getContent());
+            form.setPublished(post.isPublished());
+            return form;
+        }
+
+        public String getTitle() {
+            return title;
+        }
+
+        public void setTitle(String title) {
+            this.title = title;
+        }
+
+        public String getSlug() {
+            return slug;
+        }
+
+        public void setSlug(String slug) {
+            this.slug = slug;
+        }
+
+        public String getSummary() {
+            return summary;
+        }
+
+        public void setSummary(String summary) {
+            this.summary = summary;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
+        public void setContent(String content) {
+            this.content = content;
+        }
+
+        public boolean isPublished() {
+            return published;
+        }
+
+        public void setPublished(boolean published) {
+            this.published = published;
+        }
+    }
+
+  Notes:
+  - The slug pattern allows an empty value ("^$|"), which means "generate
+    it for me". Otherwise it allows words of a-z and 0-9 joined by single
+    dashes.
+  - The limit of 1,000,000 characters stays well below MEDIUMTEXT's 16 MB,
+    even if every character takes the maximum 4 bytes in UTF-8.
+  - The messages are written in the annotations. A multi-language site
+    would move them to messages.properties instead.
+
+  Create SlugAlreadyUsedException.java:
+
+    package com.blog.post;
+
+    public class SlugAlreadyUsedException extends RuntimeException {
+
+        public SlugAlreadyUsedException(String slug) {
+            super("The slug '" + slug + "' is already used by another post");
+        }
+    }
+
+  Replace PostNotFoundException.java. Posts can now be missing by slug
+  (public pages) or by id (admin pages), so two factory methods name the
+  two cases:
+
+    package com.blog.post;
+
+    import org.springframework.http.HttpStatus;
+    import org.springframework.web.bind.annotation.ResponseStatus;
+
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public class PostNotFoundException extends RuntimeException {
+
+        private PostNotFoundException(String message) {
+            super(message);
+        }
+
+        public static PostNotFoundException forSlug(String slug) {
+            return new PostNotFoundException("No published post with slug '" + slug + "'");
+        }
+
+        public static PostNotFoundException forId(Long id) {
+            return new PostNotFoundException("No post with id " + id);
+        }
+    }
+
+  Create AdminPostItem.java (one row of the admin list):
+
+    package com.blog.post;
+
+    import java.time.LocalDateTime;
+
+    public record AdminPostItem(Long id, String title, String slug, LocalDateTime publishedAt, LocalDateTime updatedAt) {
+
+        public boolean published() {
+            return publishedAt != null;
+        }
+
+        static AdminPostItem from(Post post) {
+            return new AdminPostItem(post.getId(), post.getTitle(), post.getSlug(), post.getPublishedAt(), post.getUpdatedAt());
+        }
+    }
+
+
+3.5 Repository
+
+  Add two methods to PostRepository.java:
+
+        boolean existsBySlug(String slug);
+
+        boolean existsBySlugAndIdNot(String slug, Long id);
+
+  The second one is for editing: a post may keep its own slug, so the
+  check skips the post being edited.
+
+
+3.6 Service
+
+  Replace PostService.java:
+
+    package com.blog.post;
+
+    import com.blog.markdown.MarkdownRenderer;
+    import org.springframework.data.domain.Page;
+    import org.springframework.data.domain.PageRequest;
+    import org.springframework.data.domain.Sort;
+    import org.springframework.stereotype.Service;
+    import org.springframework.transaction.annotation.Transactional;
+
+    import java.time.LocalDateTime;
+
+    @Service
+    @Transactional(readOnly = true)
+    public class PostService {
+
+        public static final int PAGE_SIZE = 5;
+        public static final int ADMIN_PAGE_SIZE = 20;
+
+        private static final Sort NEWEST_FIRST = Sort.by(Sort.Order.desc("publishedAt"), Sort.Order.desc("id"));
+        private static final Sort RECENTLY_UPDATED_FIRST = Sort.by(Sort.Order.desc("updatedAt"), Sort.Order.desc("id"));
+        private static final String FALLBACK_SLUG = "post";
+
+        private final PostRepository postRepository;
+        private final MarkdownRenderer markdownRenderer;
+
+        PostService(PostRepository postRepository, MarkdownRenderer markdownRenderer) {
+            this.postRepository = postRepository;
+            this.markdownRenderer = markdownRenderer;
+        }
+
+        /**
+         * @param pageNumber 1-based page number, as shown to visitors
+         */
+        public Page<PostSummary> findPublished(int pageNumber) {
+            PageRequest pageRequest = PageRequest.of(pageNumber - 1, PAGE_SIZE, NEWEST_FIRST);
+            return postRepository.findByPublishedAtIsNotNull(pageRequest).map(PostSummary::from);
+        }
+
+        public PostDetail findPublishedBySlug(String slug) {
+            return postRepository.findBySlugAndPublishedAtIsNotNull(slug)
+                    .map(this::toDetail)
+                    .orElseThrow(() -> PostNotFoundException.forSlug(slug));
+        }
+
+        /**
+         * All posts, drafts included. {@code pageNumber} is 1-based.
+         */
+        public Page<AdminPostItem> findAllForAdmin(int pageNumber) {
+            PageRequest pageRequest = PageRequest.of(pageNumber - 1, ADMIN_PAGE_SIZE, RECENTLY_UPDATED_FIRST);
+            return postRepository.findAll(pageRequest).map(AdminPostItem::from);
+        }
+
+        public PostForm getForm(Long id) {
+            return PostForm.from(getPost(id));
+        }
+
+        /**
+         * Like {@link #findPublishedBySlug}, but also shows drafts.
+         */
+        public PostDetail getPreview(Long id) {
+            return toDetail(getPost(id));
+        }
+
+        @Transactional
+        public Long create(PostForm form) {
+            String slug = chooseSlug(form, null);
+            Post post = new Post(form.getTitle().strip(), slug, blankToNull(form.getSummary()), form.getContent());
+            if (form.isPublished()) {
+                post.publish(LocalDateTime.now());
+            }
+            return postRepository.save(post).getId();
+        }
+
+        @Transactional
+        public void update(Long id, PostForm form) {
+            Post post = getPost(id);
+            String slug = chooseSlug(form, id);
+            post.update(form.getTitle().strip(), slug, blankToNull(form.getSummary()), form.getContent());
+            if (form.isPublished() && !post.isPublished()) {
+                post.publish(LocalDateTime.now());
+            } else if (!form.isPublished() && post.isPublished()) {
+                post.unpublish();
+            }
+        }
+
+        @Transactional
+        public void delete(Long id) {
+            postRepository.delete(getPost(id));
+        }
+
+        private Post getPost(Long id) {
+            return postRepository.findById(id).orElseThrow(() -> PostNotFoundException.forId(id));
+        }
+
+        /**
+         * A slug typed by the author must be free. A slug generated from the
+         * title gets a number appended until it is free.
+         */
+        private String chooseSlug(PostForm form, Long postId) {
+            String requested = form.getSlug() == null ? "" : form.getSlug().strip();
+            if (!requested.isEmpty()) {
+                if (isTaken(requested, postId)) {
+                    throw new SlugAlreadyUsedException(requested);
+                }
+                return requested;
+            }
+
+            String base = Slugs.slugify(form.getTitle());
+            if (base.isEmpty()) {
+                base = FALLBACK_SLUG;
+            }
+            String candidate = base;
+            for (int number = 2; isTaken(candidate, postId); number++) {
+                String suffix = "-" + number;
+                candidate = base.substring(0, Math.min(base.length(), Slugs.MAX_LENGTH - suffix.length())) + suffix;
+            }
+            return candidate;
+        }
+
+        private boolean isTaken(String slug, Long postId) {
+            return postId == null ? postRepository.existsBySlug(slug) : postRepository.existsBySlugAndIdNot(slug, postId);
+        }
+
+        private PostDetail toDetail(Post post) {
+            return new PostDetail(
+                    post.getTitle(),
+                    post.getSlug(),
+                    post.getSummary(),
+                    markdownRenderer.toHtml(post.getContent()),
+                    post.getPublishedAt());
+        }
+
+        private static String blankToNull(String value) {
+            return value == null || value.isBlank() ? null : value.strip();
+        }
+    }
+
+  Notes:
+  - The write methods have a plain @Transactional, which overrides the
+    class-level readOnly = true.
+  - The admin list is sorted by updatedAt, so the post you just edited is
+    at the top.
+  - When the slug gets a number, the base is shortened if needed so the
+    result stays within 200 characters.
+  - An empty summary is stored as NULL, not as an empty string, so the
+    templates' th:if="${post.summary}" checks keep working.
+
+
+3.7 Controller
+
+  Create blog/src/main/java/com/blog/web/AdminPostController.java:
+
+    package com.blog.web;
+
+    import com.blog.post.AdminPostItem;
+    import com.blog.post.PostForm;
+    import com.blog.post.PostService;
+    import com.blog.post.SlugAlreadyUsedException;
+    import jakarta.validation.Valid;
+    import org.springframework.data.domain.Page;
+    import org.springframework.http.HttpStatus;
+    import org.springframework.stereotype.Controller;
+    import org.springframework.ui.Model;
+    import org.springframework.validation.BindingResult;
+    import org.springframework.web.bind.annotation.GetMapping;
+    import org.springframework.web.bind.annotation.ModelAttribute;
+    import org.springframework.web.bind.annotation.PathVariable;
+    import org.springframework.web.bind.annotation.PostMapping;
+    import org.springframework.web.bind.annotation.RequestMapping;
+    import org.springframework.web.bind.annotation.RequestParam;
+    import org.springframework.web.server.ResponseStatusException;
+    import org.springframework.web.servlet.mvc.support.RedirectAttributes;
+
+    @Controller
+    @RequestMapping("/admin/posts")
+    class AdminPostController {
+
+        private static final String FORM_VIEW = "admin/post-form";
+
+        private final PostService postService;
+
+        AdminPostController(PostService postService) {
+            this.postService = postService;
+        }
+
+        @GetMapping
+        String list(@RequestParam(defaultValue = "1") int page, Model model) {
+            if (page < 1) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            }
+            Page<AdminPostItem> posts = postService.findAllForAdmin(page);
+            if (page > 1 && page > posts.getTotalPages()) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            }
+            model.addAttribute("posts", posts);
+            return "admin/posts";
+        }
+
+        @GetMapping("/new")
+        String newPost(Model model) {
+            model.addAttribute("post", new PostForm());
+            return FORM_VIEW;
+        }
+
+        @PostMapping
+        String create(@Valid @ModelAttribute("post") PostForm form, BindingResult bindingResult,
+                      RedirectAttributes redirectAttributes) {
+            if (bindingResult.hasErrors()) {
+                return FORM_VIEW;
+            }
+            try {
+                postService.create(form);
+            } catch (SlugAlreadyUsedException e) {
+                bindingResult.rejectValue("slug", "slug.taken", "Another post already uses this slug");
+                return FORM_VIEW;
+            }
+            redirectAttributes.addFlashAttribute("message", "Post created");
+            return "redirect:/admin/posts";
+        }
+
+        @GetMapping("/{id}/edit")
+        String edit(@PathVariable Long id, Model model) {
+            model.addAttribute("post", postService.getForm(id));
+            model.addAttribute("postId", id);
+            return FORM_VIEW;
+        }
+
+        @PostMapping("/{id}")
+        String update(@PathVariable Long id, @Valid @ModelAttribute("post") PostForm form, BindingResult bindingResult,
+                      Model model, RedirectAttributes redirectAttributes) {
+            model.addAttribute("postId", id);
+            if (bindingResult.hasErrors()) {
+                return FORM_VIEW;
+            }
+            try {
+                postService.update(id, form);
+            } catch (SlugAlreadyUsedException e) {
+                bindingResult.rejectValue("slug", "slug.taken", "Another post already uses this slug");
+                return FORM_VIEW;
+            }
+            redirectAttributes.addFlashAttribute("message", "Post saved");
+            return "redirect:/admin/posts";
+        }
+
+        @PostMapping("/{id}/delete")
+        String delete(@PathVariable Long id, RedirectAttributes redirectAttributes) {
+            postService.delete(id);
+            redirectAttributes.addFlashAttribute("message", "Post deleted");
+            return "redirect:/admin/posts";
+        }
+
+        @GetMapping("/{id}/preview")
+        String preview(@PathVariable Long id, Model model) {
+            model.addAttribute("post", postService.getPreview(id));
+            model.addAttribute("preview", true);
+            return "post";
+        }
+    }
+
+  Notes:
+  - BindingResult must come directly after the @Valid parameter. Without
+    it, a validation error would become a 400 error page instead of
+    reaching the method.
+  - @ModelAttribute("post") names the form object "post" in the model,
+    which is what the template's th:object refers to.
+  - postId tells the template whether it is creating or editing. It is
+    added before the validation check, so a form with errors still posts
+    back to the right URL.
+  - The preview reuses the public post template with a "preview" flag.
+
+
+3.8 Layout: admin link and flash messages
+
+  In fragments/layout.html, add an Admin link to the navigation:
+
+                <a th:href="@{/admin/posts}" th:classappend="${active == 'admin'} ? 'is-active'">Admin</a>
+
+  Add a flash message fragment right after the closing </header>:
+
+    <p th:fragment="flash" th:if="${message}" class="flash" role="status" th:text="${message}">Saved</p>
+
+  role="status" makes screen readers announce the message.
+
+
+3.9 Post template: previews
+
+  Replace templates/post.html:
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head th:replace="~{fragments/layout :: head(${post.title})}"></head>
+    <body>
+    <header th:replace="~{fragments/layout :: header(${preview} ? 'admin' : '')}"></header>
+
+    <main class="container">
+        <p th:if="${preview}" class="preview-banner"
+           th:text="${post.publishedAt} ? 'Preview of a published post.' : 'Preview of a draft. Visitors cannot see this post yet.'">
+            Preview of a draft.
+        </p>
+
+        <article class="post">
+            <header class="post__header">
+                <h1 class="page-title" th:text="${post.title}">Post title</h1>
+                <time class="post__date" th:if="${post.publishedAt}"
+                      th:datetime="${#temporals.formatISO(post.publishedAt)}"
+                      th:text="${#temporals.format(post.publishedAt, 'd MMMM yyyy')}">1 January 2026</time>
+            </header>
+
+            <p class="post__summary" th:if="${post.summary}" th:text="${post.summary}">Summary</p>
+
+            <div class="prose post__content" th:utext="${post.contentHtml}">Content</div>
+        </article>
+
+        <p th:unless="${preview}"><a th:href="@{/}">&larr; All posts</a></p>
+        <p th:if="${preview}"><a th:href="@{/admin/posts}">&larr; Back to admin</a></p>
+    </main>
+
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+    </body>
+    </html>
+
+  On public pages, "preview" is not in the model. Thymeleaf treats a
+  missing value as false, so the public controller needs no changes. Drafts
+  have no publish date, so the date is only shown when there is one.
+
+
+3.10 Admin list
+
+  Create templates/admin/posts.html:
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head th:replace="~{fragments/layout :: head('Admin: posts')}"></head>
+    <body>
+    <header th:replace="~{fragments/layout :: header('admin')}"></header>
+
+    <main class="container container--wide">
+        <div class="page-heading">
+            <h1 class="page-title">Posts</h1>
+            <a class="button" th:href="@{/admin/posts/new}">New post</a>
+        </div>
+
+        <p th:replace="~{fragments/layout :: flash}"></p>
+
+        <p th:if="${posts.isEmpty()}" class="empty-state">There are no posts yet.</p>
+
+        <table th:unless="${posts.isEmpty()}" class="admin-table">
+            <thead>
+            <tr>
+                <th scope="col">Title</th>
+                <th scope="col">Status</th>
+                <th scope="col">Last updated</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr th:each="post : ${posts}">
+                <td>
+                    <a th:href="@{/admin/posts/{id}/edit(id=${post.id})}" th:text="${post.title}">Post title</a>
+                    <div class="admin-table__slug" th:text="|/posts/${post.slug}|">/posts/slug</div>
+                </td>
+                <td>
+                    <span th:if="${post.published}" class="badge badge--published">Published</span>
+                    <span th:unless="${post.published}" class="badge badge--draft">Draft</span>
+                </td>
+                <td th:text="${#temporals.format(post.updatedAt, 'd MMM yyyy, HH:mm')}">1 Jan 2026, 10:00</td>
+                <td class="admin-table__actions">
+                    <a th:if="${post.published}" th:href="@{/posts/{slug}(slug=${post.slug})}">View</a>
+                    <a th:unless="${post.published}" th:href="@{/admin/posts/{id}/preview(id=${post.id})}">Preview</a>
+                    <form th:action="@{/admin/posts/{id}/delete(id=${post.id})}" method="post"
+                          th:data-title="${post.title}"
+                          onsubmit="return confirm('Delete &quot;' + this.dataset.title + '&quot;? This cannot be undone.')">
+                        <button type="submit" class="link-button link-button--danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+
+        <nav th:replace="~{fragments/layout :: pagination(${posts}, '/admin/posts')}"></nav>
+    </main>
+
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+    </body>
+    </html>
+
+  Notes:
+  - The confirmation reads the title from a data-title attribute that
+    th:data-title fills in, escaped, instead of writing the title into the
+    JavaScript code. A title containing a quote cannot break the script or
+    inject code.
+  - The pagination fragment from step 003 is reused with a different base
+    URL.
+  - The "Actions" header is visually hidden but still read by screen
+    readers, so the column has a name.
+
+
+3.11 Admin form
+
+  Create templates/admin/post-form.html:
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head th:replace="~{fragments/layout :: head(${postId} ? 'Edit post' : 'New post')}"></head>
+    <body>
+    <header th:replace="~{fragments/layout :: header('admin')}"></header>
+
+    <main class="container">
+        <h1 class="page-title" th:text="${postId} ? 'Edit post' : 'New post'">New post</h1>
+
+        <form class="form" method="post" th:object="${post}"
+              th:action="${postId} ? @{/admin/posts/{id}(id=${postId})} : @{/admin/posts}">
+
+            <p th:if="${#fields.hasErrors('*')}" class="form__summary" role="alert">
+                Please correct the highlighted fields.
+            </p>
+
+            <div class="form__field">
+                <label for="title">Title</label>
+                <input type="text" th:field="*{title}" maxlength="200" required
+                       th:errorclass="is-invalid" aria-describedby="title-error">
+                <p th:if="${#fields.hasErrors('title')}" th:errors="*{title}" id="title-error" class="form__error">Error</p>
+            </div>
+
+            <div class="form__field">
+                <label for="slug">Slug</label>
+                <input type="text" th:field="*{slug}" maxlength="200" pattern="[a-z0-9]+(-[a-z0-9]+)*"
+                       th:errorclass="is-invalid" aria-describedby="slug-help slug-error">
+                <p id="slug-help" class="form__help">
+                    The address of the post: /posts/<em>slug</em>. Leave empty to create it from the title.
+                </p>
+                <p th:if="${#fields.hasErrors('slug')}" th:errors="*{slug}" id="slug-error" class="form__error">Error</p>
+            </div>
+
+            <div class="form__field">
+                <label for="summary">Summary <span class="form__optional">(optional)</span></label>
+                <textarea th:field="*{summary}" rows="2" maxlength="500"
+                          th:errorclass="is-invalid" aria-describedby="summary-error"></textarea>
+                <p th:if="${#fields.hasErrors('summary')}" th:errors="*{summary}" id="summary-error" class="form__error">Error</p>
+            </div>
+
+            <div class="form__field">
+                <label for="content">Content</label>
+                <textarea th:field="*{content}" rows="18" class="form__code" required
+                          th:errorclass="is-invalid" aria-describedby="content-help content-error"></textarea>
+                <p id="content-help" class="form__help">Markdown. Start headings at ## because the title is the main heading.</p>
+                <p th:if="${#fields.hasErrors('content')}" th:errors="*{content}" id="content-error" class="form__error">Error</p>
+            </div>
+
+            <div class="form__field form__field--checkbox">
+                <input type="checkbox" th:field="*{published}">
+                <label th:for="${#ids.prev('published')}">Published</label>
+            </div>
+
+            <div class="form__actions">
+                <button type="submit" class="button">Save</button>
+                <a th:if="${postId}" th:href="@{/admin/posts/{id}/preview(id=${postId})}">Preview</a>
+                <a th:href="@{/admin/posts}">Cancel</a>
+            </div>
+        </form>
+    </main>
+
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+    </body>
+    </html>
+
+  Notes:
+  - th:field="*{title}" sets the input's id, name, and value from the form
+    object, so the input keeps what the author typed after an error.
+  - th:errorclass adds the is-invalid class only when the field has an
+    error. th:errors prints that field's messages.
+  - required, maxlength, and pattern give instant feedback in the browser.
+    They are a convenience only: anyone can send a request without them, so
+    the server-side rules in PostForm are what count.
+  - For checkboxes, th:field generates the id "published1" (it adds a
+    number because a field could have several checkboxes), so the label
+    gets it from #ids.prev('published').
+
+
+3.12 CSS
+
+  In static/css/main.css, add these colours to the :root block below
+  --color-accent:
+
+        --color-success: #166534;
+        --color-success-background: #dcfce7;
+        --color-warning: #92400e;
+        --color-warning-background: #fef3c7;
+        --color-danger: #b91c1c;
+        --color-danger-background: #fee2e2;
+
+  Add after the main.container rule:
+
+    .container--wide {
+        max-width: 960px;
+    }
+
+    .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+    }
+
+  Add at the end of the file:
+
+    /* Buttons and messages */
+
+    .button {
+        display: inline-block;
+        padding: 0.5rem 1.1rem;
+        border: none;
+        border-radius: var(--radius);
+        background: var(--color-accent);
+        color: #ffffff;
+        font: inherit;
+        font-weight: 600;
+        text-decoration: none;
+        cursor: pointer;
+    }
+
+    .button:hover {
+        filter: brightness(1.1);
+    }
+
+    .link-button {
+        padding: 0;
+        border: none;
+        background: none;
+        color: var(--color-accent);
+        font: inherit;
+        text-decoration: underline;
+        cursor: pointer;
+    }
+
+    .link-button--danger {
+        color: var(--color-danger);
+    }
+
+    .flash {
+        padding: 0.75rem 1rem;
+        border-radius: var(--radius);
+        background: var(--color-success-background);
+        color: var(--color-success);
+    }
+
+    .preview-banner {
+        padding: 0.75rem 1rem;
+        border-radius: var(--radius);
+        background: var(--color-warning-background);
+        color: var(--color-warning);
+    }
+
+    /* Admin */
+
+    .page-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .page-heading .page-title {
+        margin: 0;
+    }
+
+    .admin-table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+    }
+
+    .admin-table th,
+    .admin-table td {
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid var(--color-border);
+        text-align: left;
+        vertical-align: top;
+    }
+
+    .admin-table th {
+        font-size: 0.875rem;
+        color: var(--color-muted);
+    }
+
+    .admin-table__slug {
+        font-size: 0.8125rem;
+        color: var(--color-muted);
+    }
+
+    .admin-table__actions {
+        white-space: nowrap;
+    }
+
+    .admin-table__actions > * + * {
+        margin-left: 0.75rem;
+    }
+
+    .admin-table__actions form {
+        display: inline;
+    }
+
+    .badge {
+        display: inline-block;
+        padding: 0.1rem 0.6rem;
+        border-radius: 999px;
+        font-size: 0.8125rem;
+        font-weight: 600;
+    }
+
+    .badge--published {
+        background: var(--color-success-background);
+        color: var(--color-success);
+    }
+
+    .badge--draft {
+        background: var(--color-warning-background);
+        color: var(--color-warning);
+    }
+
+    /* Forms */
+
+    .form__summary {
+        padding: 0.75rem 1rem;
+        border-radius: var(--radius);
+        background: var(--color-danger-background);
+        color: var(--color-danger);
+    }
+
+    .form__field {
+        margin-bottom: 1.25rem;
+    }
+
+    .form__field label {
+        display: block;
+        margin-bottom: 0.25rem;
+        font-weight: 600;
+    }
+
+    .form__field input[type="text"],
+    .form__field input[type="password"],
+    .form__field textarea {
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        background: var(--color-surface);
+        color: inherit;
+        font: inherit;
+    }
+
+    .form__field input:focus,
+    .form__field textarea:focus {
+        outline: 2px solid var(--color-accent);
+        outline-offset: 1px;
+    }
+
+    .form__field .is-invalid {
+        border-color: var(--color-danger);
+    }
+
+    .form__field--checkbox {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .form__field--checkbox label {
+        margin: 0;
+    }
+
+    .form__code {
+        font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+        font-size: 0.9rem;
+    }
+
+    .form__optional {
+        font-weight: 400;
+        color: var(--color-muted);
+    }
+
+    .form__help {
+        margin: 0.25rem 0 0;
+        font-size: 0.875rem;
+        color: var(--color-muted);
+    }
+
+    .form__error {
+        margin: 0.25rem 0 0;
+        font-size: 0.875rem;
+        color: var(--color-danger);
+    }
+
+    .form__actions {
+        display: flex;
+        align-items: center;
+        gap: 1.25rem;
+    }
+
+  The password input style is already included for the login page in
+  step 006.
+
+
+3.13 Tests
+
+  In PostControllerTest.java, the exception now has a factory method:
+
+            given(postService.findPublishedBySlug("missing")).willThrow(PostNotFoundException.forSlug("missing"));
+
+  Create blog/src/test/java/com/blog/post/SlugsTest.java:
+
+    package com.blog.post;
+
+    import org.junit.jupiter.api.Test;
+    import org.junit.jupiter.params.ParameterizedTest;
+    import org.junit.jupiter.params.provider.CsvSource;
+
+    import static org.assertj.core.api.Assertions.assertThat;
+
+    class SlugsTest {
+
+        @ParameterizedTest
+        @CsvSource(delimiter = '|', value = {
+                "Hello World                  | hello-world",
+                "  Spaces   everywhere  !     | spaces-everywhere",
+                "Café & Crème: Part 2!        | cafe-creme-part-2",
+                "Über die Straße              | uber-die-strasse",
+                "Smørrebrød, Łódź             | smorrebrod-lodz",
+                "Spring Boot 4.1 -- released  | spring-boot-4-1-released",
+                "already-a-slug               | already-a-slug",
+        })
+        void turnsTitlesIntoSlugs(String title, String expected) {
+            assertThat(Slugs.slugify(title)).isEqualTo(expected);
+        }
+
+        @Test
+        void returnsEmptyWhenNothingIsLeft() {
+            assertThat(Slugs.slugify("!!! ???")).isEmpty();
+        }
+
+        @Test
+        void limitsTheLengthWithoutATrailingDash() {
+            String slug = Slugs.slugify("a".repeat(199) + " bbbb");
+
+            assertThat(slug).hasSize(Slugs.MAX_LENGTH - 1).doesNotEndWith("-");
+        }
+    }
+
+  @ParameterizedTest runs the same test once per line of the table. The '|'
+  delimiter allows commas inside the titles. @CsvSource trims spaces around
+  each value, which is why the columns can be aligned.
+
+  Create blog/src/test/java/com/blog/post/PostServiceAdminTest.java:
+
+    package com.blog.post;
+
+    import com.blog.TestcontainersConfiguration;
+    import com.blog.markdown.MarkdownRenderer;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
+    import org.springframework.context.annotation.Import;
+    import org.springframework.test.context.ActiveProfiles;
+
+    import java.time.LocalDateTime;
+
+    import static org.assertj.core.api.Assertions.assertThat;
+    import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+    @DataJpaTest
+    @Import({TestcontainersConfiguration.class, PostService.class, MarkdownRenderer.class})
+    @ActiveProfiles("test")
+    class PostServiceAdminTest {
+
+        @Autowired
+        private PostRepository postRepository;
+
+        @Autowired
+        private PostService postService;
+
+        @Test
+        void createsDraftWithSlugFromTitle() {
+            Long id = postService.create(form("My First Post", "", false));
+
+            Post post = postRepository.findById(id).orElseThrow();
+            assertThat(post.getSlug()).isEqualTo("my-first-post");
+            assertThat(post.isPublished()).isFalse();
+        }
+
+        @Test
+        void numbersGeneratedSlugsThatAreTaken() {
+            postService.create(form("Same title", "", false));
+            Long second = postService.create(form("Same title", "", false));
+            Long third = postService.create(form("Same title", "", false));
+
+            assertThat(postRepository.findById(second).orElseThrow().getSlug()).isEqualTo("same-title-2");
+            assertThat(postRepository.findById(third).orElseThrow().getSlug()).isEqualTo("same-title-3");
+        }
+
+        @Test
+        void usesFallbackSlugWhenTitleHasNoLetters() {
+            Long id = postService.create(form("!!!", "", false));
+
+            assertThat(postRepository.findById(id).orElseThrow().getSlug()).isEqualTo("post");
+        }
+
+        @Test
+        void rejectsATypedSlugThatIsTaken() {
+            postService.create(form("First", "taken", false));
+
+            assertThatThrownBy(() -> postService.create(form("Second", "taken", false)))
+                    .isInstanceOf(SlugAlreadyUsedException.class);
+        }
+
+        @Test
+        void publishesWhenCreatedAsPublished() {
+            Long id = postService.create(form("Live", "", true));
+
+            assertThat(postRepository.findById(id).orElseThrow().getPublishedAt()).isNotNull();
+        }
+
+        @Test
+        void storesBlankSummaryAsNull() {
+            PostForm form = form("Title", "", false);
+            form.setSummary("   ");
+
+            Long id = postService.create(form);
+
+            assertThat(postRepository.findById(id).orElseThrow().getSummary()).isNull();
+        }
+
+        @Test
+        void updatesFieldsAndKeepsTheOriginalPublishDate() {
+            LocalDateTime originalDate = LocalDateTime.of(2026, 1, 1, 10, 0);
+            Post post = new Post("Old title", "old-title", null, "old");
+            post.publish(originalDate);
+            Long id = postRepository.save(post).getId();
+
+            postService.update(id, form("New title", "new-title", true));
+
+            Post updated = postRepository.findById(id).orElseThrow();
+            assertThat(updated.getTitle()).isEqualTo("New title");
+            assertThat(updated.getSlug()).isEqualTo("new-title");
+            assertThat(updated.getPublishedAt()).isEqualTo(originalDate);
+        }
+
+        @Test
+        void keepingItsOwnSlugIsNotAConflict() {
+            Long id = postService.create(form("Title", "my-slug", false));
+
+            postService.update(id, form("Changed title", "my-slug", false));
+
+            assertThat(postRepository.findById(id).orElseThrow().getTitle()).isEqualTo("Changed title");
+        }
+
+        @Test
+        void rejectsChangingToAnotherPostsSlug() {
+            postService.create(form("One", "one", false));
+            Long two = postService.create(form("Two", "two", false));
+
+            assertThatThrownBy(() -> postService.update(two, form("Two", "one", false)))
+                    .isInstanceOf(SlugAlreadyUsedException.class);
+        }
+
+        @Test
+        void unpublishesAndRepublishes() {
+            Long id = postService.create(form("Title", "", true));
+
+            postService.update(id, form("Title", "title", false));
+            assertThat(postRepository.findById(id).orElseThrow().isPublished()).isFalse();
+
+            postService.update(id, form("Title", "title", true));
+            assertThat(postRepository.findById(id).orElseThrow().isPublished()).isTrue();
+        }
+
+        @Test
+        void deletesPosts() {
+            Long id = postService.create(form("Doomed", "", false));
+
+            postService.delete(id);
+
+            assertThat(postRepository.existsById(id)).isFalse();
+        }
+
+        @Test
+        void unknownIdsAreNotFound() {
+            assertThatThrownBy(() -> postService.getForm(999L)).isInstanceOf(PostNotFoundException.class);
+            assertThatThrownBy(() -> postService.update(999L, form("x", "", false))).isInstanceOf(PostNotFoundException.class);
+            assertThatThrownBy(() -> postService.delete(999L)).isInstanceOf(PostNotFoundException.class);
+        }
+
+        @Test
+        void adminListIncludesDrafts() {
+            postService.create(form("Draft", "", false));
+            postService.create(form("Published", "", true));
+
+            assertThat(postService.findAllForAdmin(1).getContent())
+                    .extracting(AdminPostItem::title)
+                    .containsExactlyInAnyOrder("Draft", "Published");
+        }
+
+        @Test
+        void previewShowsDrafts() {
+            Long id = postService.create(form("Secret", "", false));
+
+            assertThat(postService.getPreview(id).title()).isEqualTo("Secret");
+        }
+
+        @Test
+        void formIsFilledFromThePost() {
+            PostForm original = form("Title", "slug", true);
+            original.setSummary("Summary");
+            Long id = postService.create(original);
+
+            PostForm loaded = postService.getForm(id);
+
+            assertThat(loaded.getTitle()).isEqualTo("Title");
+            assertThat(loaded.getSlug()).isEqualTo("slug");
+            assertThat(loaded.getSummary()).isEqualTo("Summary");
+            assertThat(loaded.getContent()).isEqualTo("Some content");
+            assertThat(loaded.isPublished()).isTrue();
+        }
+
+        private static PostForm form(String title, String slug, boolean published) {
+            PostForm form = new PostForm();
+            form.setTitle(title);
+            form.setSlug(slug);
+            form.setContent("Some content");
+            form.setPublished(published);
+            return form;
+        }
+    }
+
+  This is a separate class from PostServiceTest, so the public reading
+  tests and the admin writing tests each stay readable. Each test runs in a
+  transaction that is rolled back, so the generated ids keep growing, but
+  no data is shared between tests.
+
+  Create blog/src/test/java/com/blog/web/AdminPostControllerTest.java:
+
+    package com.blog.web;
+
+    import com.blog.post.AdminPostItem;
+    import com.blog.post.PostDetail;
+    import com.blog.post.PostForm;
+    import com.blog.post.PostNotFoundException;
+    import com.blog.post.PostService;
+    import com.blog.post.SlugAlreadyUsedException;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+    import org.springframework.data.domain.PageImpl;
+    import org.springframework.test.context.bean.override.mockito.MockitoBean;
+    import org.springframework.test.web.servlet.MockMvc;
+
+    import java.time.LocalDateTime;
+    import java.util.List;
+
+    import static org.hamcrest.Matchers.containsString;
+    import static org.mockito.ArgumentMatchers.any;
+    import static org.mockito.ArgumentMatchers.argThat;
+    import static org.mockito.ArgumentMatchers.eq;
+    import static org.mockito.BDDMockito.given;
+    import static org.mockito.BDDMockito.willThrow;
+    import static org.mockito.Mockito.never;
+    import static org.mockito.Mockito.verify;
+    import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+    import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.flash;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.model;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
+
+    @WebMvcTest(AdminPostController.class)
+    class AdminPostControllerTest {
+
+        private static final LocalDateTime DATE = LocalDateTime.of(2026, 9, 1, 9, 0);
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @MockitoBean
+        private PostService postService;
+
+        @Test
+        void listsAllPostsWithTheirStatus() throws Exception {
+            given(postService.findAllForAdmin(1)).willReturn(new PageImpl<>(List.of(
+                    new AdminPostItem(1L, "A draft", "a-draft", null, DATE),
+                    new AdminPostItem(2L, "A live post", "a-live-post", DATE, DATE))));
+
+            mockMvc.perform(get("/admin/posts"))
+                    .andExpect(status().isOk())
+                    .andExpect(view().name("admin/posts"))
+                    .andExpect(content().string(containsString("A draft")))
+                    .andExpect(content().string(containsString("Draft</span>")))
+                    .andExpect(content().string(containsString("href=\"/admin/posts/1/preview\"")))
+                    .andExpect(content().string(containsString("href=\"/posts/a-live-post\"")))
+                    .andExpect(content().string(containsString("action=\"/admin/posts/2/delete\"")));
+        }
+
+        @Test
+        void showsAnEmptyFormForNewPosts() throws Exception {
+            mockMvc.perform(get("/admin/posts/new"))
+                    .andExpect(status().isOk())
+                    .andExpect(view().name("admin/post-form"))
+                    .andExpect(content().string(containsString("<h1 class=\"page-title\">New post</h1>")))
+                    .andExpect(content().string(containsString("action=\"/admin/posts\"")));
+        }
+
+        @Test
+        void createsPostAndRedirectsWithMessage() throws Exception {
+            mockMvc.perform(post("/admin/posts")
+                            .param("title", "Hello")
+                            .param("slug", "")
+                            .param("content", "Some **Markdown**")
+                            .param("published", "true"))
+                    .andExpect(status().is3xxRedirection())
+                    .andExpect(redirectedUrl("/admin/posts"))
+                    .andExpect(flash().attribute("message", "Post created"));
+
+            verify(postService).create(argThat(form ->
+                    form.getTitle().equals("Hello") && form.isPublished() && form.getContent().equals("Some **Markdown**")));
+        }
+
+        @Test
+        void showsValidationErrorsAndKeepsTheInput() throws Exception {
+            mockMvc.perform(post("/admin/posts")
+                            .param("title", "")
+                            .param("slug", "Not A Slug")
+                            .param("content", "Content I don't want to lose"))
+                    .andExpect(status().isOk())
+                    .andExpect(view().name("admin/post-form"))
+                    .andExpect(model().attributeHasFieldErrors("post", "title", "slug"))
+                    .andExpect(content().string(containsString("Enter a title")))
+                    .andExpect(content().string(containsString("Use only lowercase letters")))
+                    .andExpect(content().string(containsString("Content I don&#39;t want to lose")));
+
+            verify(postService, never()).create(any());
+        }
+
+        @Test
+        void showsAnErrorWhenTheSlugIsTaken() throws Exception {
+            willThrow(new SlugAlreadyUsedException("taken")).given(postService).create(any());
+
+            mockMvc.perform(post("/admin/posts")
+                            .param("title", "Hello")
+                            .param("slug", "taken")
+                            .param("content", "Content"))
+                    .andExpect(status().isOk())
+                    .andExpect(model().attributeHasFieldErrorCode("post", "slug", "slug.taken"))
+                    .andExpect(content().string(containsString("Another post already uses this slug")));
+        }
+
+        @Test
+        void showsTheEditFormFilledIn() throws Exception {
+            PostForm form = new PostForm();
+            form.setTitle("Existing title");
+            form.setSlug("existing-title");
+            form.setContent("Existing content");
+            given(postService.getForm(7L)).willReturn(form);
+
+            mockMvc.perform(get("/admin/posts/7/edit"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("<h1 class=\"page-title\">Edit post</h1>")))
+                    .andExpect(content().string(containsString("value=\"Existing title\"")))
+                    .andExpect(content().string(containsString("action=\"/admin/posts/7\"")));
+        }
+
+        @Test
+        void updatesPostAndRedirects() throws Exception {
+            mockMvc.perform(post("/admin/posts/7")
+                            .param("title", "Changed")
+                            .param("slug", "changed")
+                            .param("content", "Content"))
+                    .andExpect(redirectedUrl("/admin/posts"))
+                    .andExpect(flash().attribute("message", "Post saved"));
+
+            verify(postService).update(eq(7L), argThat(form -> form.getTitle().equals("Changed") && !form.isPublished()));
+        }
+
+        @Test
+        void deletesPostAndRedirects() throws Exception {
+            mockMvc.perform(post("/admin/posts/7/delete"))
+                    .andExpect(redirectedUrl("/admin/posts"))
+                    .andExpect(flash().attribute("message", "Post deleted"));
+
+            verify(postService).delete(7L);
+        }
+
+        @Test
+        void deletingIsNotPossibleWithGet() throws Exception {
+            mockMvc.perform(get("/admin/posts/7/delete"))
+                    .andExpect(status().is4xxClientError());
+
+            verify(postService, never()).delete(any());
+        }
+
+        @Test
+        void previewsDrafts() throws Exception {
+            given(postService.getPreview(7L)).willReturn(new PostDetail("Draft", "draft", null, "<p>Body</p>", null));
+
+            mockMvc.perform(get("/admin/posts/7/preview"))
+                    .andExpect(status().isOk())
+                    .andExpect(view().name("post"))
+                    .andExpect(content().string(containsString("Preview of a draft")))
+                    .andExpect(content().string(containsString("<p>Body</p>")));
+        }
+
+        @Test
+        void unknownPostIsNotFound() throws Exception {
+            given(postService.getForm(999L)).willThrow(PostNotFoundException.forId(999L));
+
+            mockMvc.perform(get("/admin/posts/999/edit"))
+                    .andExpect(status().isNotFound());
+        }
+    }
+
+  Notes:
+  - argThat(...) checks which form object reached the service, which
+    proves the request parameters were bound correctly.
+  - updatesPostAndRedirects sends no "published" parameter and expects
+    false, the "unchecked checkbox" case.
+  - showsValidationErrorsAndKeepsTheInput also checks that the content is
+    shown again, HTML-escaped (the ' becomes &#39;).
+  - deletingIsNotPossibleWithGet guards the "never change data with GET"
+    rule.
+
+
+4. VERIFY
+---------
+  a) Run the tests:
+
+       .\mvnw verify
+
+     Expected: "Tests run: 63, Failures: 0" and "BUILD SUCCESS".
+
+  b) Run the application:
+
+       .\mvnw spring-boot:run
+
+     Liquibase runs 1 changeset (006). Then click "Admin" in the header and
+     try the whole flow:
+     1. "New post" with the title "Grüße aus Köln", an empty slug, some
+        Markdown, and "Published" checked. Save. You are back on the list
+        with "Post created", and the slug is grusse-aus-koln.
+     2. Open http://localhost:8080. The post is at the top.
+     3. Reload the admin list. The message is gone.
+     4. Edit the post and uncheck "Published". Its public URL now shows
+        "Page not found", while "Preview" in the list still shows it, with
+        a yellow draft banner.
+     5. Create another post, clear the title, and type "Bad Slug" as the
+        slug. You get two error messages and keep the text you typed.
+        (The browser checks some of this first. To see the server's
+        messages, remove the required attribute with the browser's
+        developer tools.)
+     6. Delete a post and confirm. It is gone, with "Post deleted".
+
+  c) Optional: check the widened column:
+
+       docker exec -it blog-mysql mysql -ubloguser -pblogpass blogdb -e "SHOW COLUMNS FROM posts LIKE 'content';"
+
+     Expected: Type mediumtext, Null NO.
+
+  Troubleshooting
+  - "Schema-validation: wrong column type encountered in column [content]
+    ... found [mediumtext], but expecting [text]": the changeset ran, but
+    the entity still says columnDefinition = "TEXT".
+  - Validation errors give a "400 Bad Request" page instead of messages on
+    the form: BindingResult is missing, or it is not the parameter directly
+    after @Valid.
+  - Unchecking "Published" does nothing: the checkbox was written without
+    th:field, so the hidden _published field is missing.
+  - Non-ASCII characters show as "Ã¼": something in the chain is not
+    UTF-8. Spring Boot and the MySQL image use UTF-8 (utf8mb4) by default,
+    so check your editor's file encoding first.
+
+
+5. COMMIT
+---------
+  git add -A
+  git commit -m "Step 005: Admin pages to create, edit, publish, and delete posts"

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('Admin: posts')}"></head>
+<body>
+<header th:replace="~{fragments/layout :: header('admin')}"></header>
+
+<main class="container container--wide">
+    <nav th:replace="~{fragments/layout :: admin-nav('posts')}"></nav>
+
+    <div class="page-heading">
+        <h1 class="page-title">Posts</h1>
+        <a class="button" th:href="@{/admin/posts/new}">New post</a>
+    </div>
+
+    <p th:replace="~{fragments/layout :: flash}"></p>
+
+    <p th:if="${posts.isEmpty()}" class="empty-state">There are no posts yet.</p>
+
+    <table th:unless="${posts.isEmpty()}" class="admin-table">
+        <thead>
+        <tr>
+            <th scope="col">Title</th>
+            <th scope="col">Category</th>
+            <th scope="col">Status</th>
+            <th scope="col">Last updated</th>
+            <th scope="col"><span class="visually-hidden">Actions</span></th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="post : ${posts}">
+            <td>
+                <a th:href="@{/admin/posts/{id}/edit(id=${post.id})}" th:text="${post.title}">Post title</a>
+                <div class="admin-table__slug" th:text="|/posts/${post.slug}|">/posts/slug</div>
+            </td>
+            <td th:text="${post.categoryName}">General</td>
+            <td>
+                <span th:if="${post.published}" class="badge badge--published">Published</span>
+                <span th:unless="${post.published}" class="badge badge--draft">Draft</span>
+            </td>
+            <td th:text="${#temporals.format(post.updatedAt, 'd MMM yyyy, HH:mm')}">1 Jan 2026, 10:00</td>
+            <td class="admin-table__actions">
+                <a th:if="${post.published}" th:href="@{/posts/{slug}(slug=${post.slug})}">View</a>
+                <a th:unless="${post.published}" th:href="@{/admin/posts/{id}/preview(id=${post.id})}">Preview</a>
+                <form th:action="@{/admin/posts/{id}/delete(id=${post.id})}" method="post"
+                      th:data-title="${post.title}"
+                      onsubmit="return confirm('Delete &quot;' + this.dataset.title + '&quot;? This cannot be undone.')">
+                    <button type="submit" class="link-button link-button--danger">Delete</button>
+                </form>
+            </td>
+        </tr>
+        </tbody>
+    </table>
+
+    <nav th:replace="~{fragments/layout :: pagination(${posts}, '/admin/posts')}"></nav>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>

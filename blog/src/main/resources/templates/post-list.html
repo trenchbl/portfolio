@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head(${heading})}"></head>
+<body>
+<header th:replace="~{fragments/layout :: header('')}"></header>
+
+<main class="container">
+    <h1 class="page-title" th:text="${heading}">Posts in Spring</h1>
+
+    <p th:if="${posts.isEmpty()}" class="empty-state">No posts have been published here yet.</p>
+
+    <th:block th:each="post : ${posts}">
+        <article th:replace="~{fragments/layout :: post-card(${post})}"></article>
+    </th:block>
+
+    <nav th:replace="~{fragments/layout :: pagination(${posts}, ${baseUrl})}"></nav>
+
+    <p><a th:href="@{/}">&larr; All posts</a></p>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>

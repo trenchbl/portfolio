@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <changeSet id="004-insert-more-sample-posts" author="blog" contextFilter="dev">
+        <insert tableName="posts">
+            <column name="title" value="Package by feature"/>
+            <column name="slug" value="package-by-feature"/>
+            <column name="summary" value="Grouping code by what it does instead of by what kind of class it is."/>
+            <column name="content" value="Putting the entity, repository, and service for posts in one package means the repository can stay package-private.&#10;&#10;Controllers have to go through the service, which keeps database access in one place."/>
+            <column name="published_at" valueDate="2026-08-01T10:00:00"/>
+            <column name="created_at" valueDate="2026-08-01T10:00:00"/>
+            <column name="updated_at" valueDate="2026-08-01T10:00:00"/>
+        </insert>
+        <insert tableName="posts">
+            <column name="title" value="Constructor injection"/>
+            <column name="slug" value="constructor-injection"/>
+            <column name="summary" value="Why final fields and constructors beat @Autowired on fields."/>
+            <column name="content" value="With constructor injection, dependencies are explicit and the object is always fully initialised.&#10;&#10;It also makes classes easy to create in plain unit tests."/>
+            <column name="published_at" valueDate="2026-08-10T10:00:00"/>
+            <column name="created_at" valueDate="2026-08-10T10:00:00"/>
+            <column name="updated_at" valueDate="2026-08-10T10:00:00"/>
+        </insert>
+        <insert tableName="posts">
+            <column name="title" value="Read-only transactions"/>
+            <column name="slug" value="read-only-transactions"/>
+            <column name="summary" value="What @Transactional(readOnly = true) actually does."/>
+            <column name="content" value="Hibernate skips dirty checking for read-only transactions, and the JDBC connection is flagged as read-only.&#10;&#10;Write methods override it with a plain @Transactional."/>
+            <column name="published_at" valueDate="2026-08-20T10:00:00"/>
+            <column name="created_at" valueDate="2026-08-20T10:00:00"/>
+            <column name="updated_at" valueDate="2026-08-20T10:00:00"/>
+        </insert>
+        <insert tableName="posts">
+            <column name="title" value="Thymeleaf fragments"/>
+            <column name="slug" value="thymeleaf-fragments"/>
+            <column name="summary" value="A shared layout without an extra layout library."/>
+            <column name="content" value="th:fragment defines a reusable piece of a page and th:replace pulls it in.&#10;&#10;Fragment parameters let each page set its own title and active navigation link."/>
+            <column name="published_at" valueDate="2026-08-25T10:00:00"/>
+            <column name="created_at" valueDate="2026-08-25T10:00:00"/>
+            <column name="updated_at" valueDate="2026-08-25T10:00:00"/>
+        </insert>
+    </changeSet>
+
+</databaseChangeLog>

@@ -1,0 +1,962 @@
+STEP 006 - AUTHENTICATION WITH SPRING SECURITY
+==============================================
+
+
+1. GOAL
+-------
+At the end of this step you will have:
+- /admin/** only reachable by a logged-in admin; visitors are sent to a
+  login page
+- A login page at /login with your own layout, and "Log out" in the header
+- User accounts in the database, with passwords stored as bcrypt hashes
+- The first admin account created on startup from configuration, so no
+  password ever ends up in a changeset or in Git
+- CSRF protection on every form
+- "Admin" and "Log out" in the header only for admins
+- A friendly 403 page
+
+
+2. CONCEPTS
+-----------
+The filter chain
+  Spring Security is a chain of servlet filters that runs before any
+  controller. Adding the starter alone locks down every URL and generates a
+  default login page with a random password. A SecurityFilterChain bean
+  replaces those defaults with your own rules:
+  - /admin/** needs the ADMIN role
+  - everything else is public
+  Rules are checked top to bottom, and the first match wins, so put
+  specific paths first and anyRequest() last.
+
+Authentication vs. authorization
+  Authentication asks "who are you?": the login form checks the username
+  and password. Authorization asks "what may you do?": hasRole("ADMIN")
+  on /admin/**. A visitor who is not logged in is redirected to /login. A
+  logged-in user without the role gets 403 Forbidden.
+
+Roles and authorities
+  hasRole("ADMIN") checks for the authority "ROLE_ADMIN". The builder
+  User.withUsername(...).roles("ADMIN") adds the "ROLE_" prefix for you.
+  The database stores only "ADMIN".
+
+UserDetailsService
+  The login form gives Spring Security a username and password. It asks
+  your UserDetailsService to load the user by name, then compares the
+  password with the stored hash itself. You never compare passwords in
+  your own code. An unknown user and a wrong password give the same
+  "incorrect" message, so the login page does not reveal which usernames
+  exist.
+
+Password hashing
+  Passwords are never stored. A hash is: bcrypt is deliberately slow and
+  adds a random salt, so two users with the same password get different
+  hashes, and a stolen table is expensive to crack.
+  PasswordEncoderFactories.createDelegatingPasswordEncoder() stores the
+  algorithm in front of the hash ("{bcrypt}$2a$10$..."). If you move to a
+  stronger algorithm later, old hashes keep working, because each hash
+  says how it was made.
+
+The first admin
+  Somebody has to exist before anyone can log in. Putting a user in a
+  changeset would put a password hash in Git, and it would be the same on
+  every installation. Instead, an ApplicationRunner checks at startup: if
+  the users table is empty and blog.admin.username and blog.admin.password
+  are set, it creates the admin with a hashed password. Once a user exists,
+  the settings are ignored, so you can remove the password afterwards.
+  On your machine the settings live in application-local.properties, which
+  Git ignores. On a server (step 009) they come from the
+  BLOG_ADMIN_USERNAME and BLOG_ADMIN_PASSWORD environment variables. Spring
+  Boot maps those names to blog.admin.username and blog.admin.password
+  automatically.
+
+CSRF (cross-site request forgery)
+  While you are logged in, your browser sends the session cookie with
+  every request to the blog, including requests that another website
+  triggers. Without protection, a malicious page could contain a hidden
+  form that posts to /admin/posts/1/delete, and the browser would send it
+  with your cookie.
+  Spring Security therefore requires a secret token on every POST, PUT,
+  PATCH, and DELETE. The token is stored in your session and is unknown to
+  other sites. Thymeleaf adds it to every form that uses th:action, as a
+  hidden _csrf field. That is the reason all forms in this project use
+  th:action instead of a plain action attribute. GET requests are not
+  checked, which is one more reason never to change data with GET (step
+  005).
+
+Logout is a POST
+  With CSRF enabled, logout only works as POST /logout with the token. A
+  plain <a href="/logout"> link would let any website log you out. So
+  "Log out" in the header is a small form with a button styled as a link.
+
+Saved requests
+  When a visitor opens /admin/posts/3/edit and is sent to the login page,
+  Spring Security remembers that URL. After login, it sends them back to
+  it, with "?continue" added, instead of the default /admin/posts.
+
+sec:authorize in templates
+  The thymeleaf-extras-springsecurity6 module adds the sec: attributes.
+  sec:authorize="hasRole('ADMIN')" renders an element only for admins.
+  This only hides links. The filter chain is what actually protects the
+  pages.
+
+
+3. INSTRUCTIONS
+---------------
+  Stop the running app before you start (Ctrl+C), so DevTools does not run
+  a half-written changeset.
+
+3.1 Dependencies
+
+  Add these to blog/pom.xml, next to the other starters:
+
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.thymeleaf.extras</groupId>
+        <artifactId>thymeleaf-extras-springsecurity6</artifactId>
+    </dependency>
+
+  And this to the test dependencies:
+
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-security-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+
+  Spring Boot manages all three versions. The "6" in the Thymeleaf module
+  name is historical: the same module supports Spring Security 7.
+
+3.2 The users table
+
+  Create blog/src/main/resources/db/changelog/changes/007-create-users-table.xml:
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <databaseChangeLog
+            xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+        <changeSet id="007-create-users-table" author="blog">
+            <createTable tableName="users">
+                <column name="id" type="BIGINT" autoIncrement="true">
+                    <constraints primaryKey="true" nullable="false"/>
+                </column>
+                <column name="username" type="VARCHAR(50)">
+                    <constraints nullable="false" unique="true" uniqueConstraintName="uk_users_username"/>
+                </column>
+                <!-- Holds "{bcrypt}" plus the 60-character hash, with room for a stronger algorithm later -->
+                <column name="password_hash" type="VARCHAR(255)">
+                    <constraints nullable="false"/>
+                </column>
+                <column name="role" type="VARCHAR(20)">
+                    <constraints nullable="false"/>
+                </column>
+                <!-- Liquibase turns BOOLEAN into TINYINT on MySQL, but Hibernate validates booleans as BIT -->
+                <column name="enabled" type="BIT(1)" defaultValueBoolean="true">
+                    <constraints nullable="false"/>
+                </column>
+                <column name="created_at" type="DATETIME(6)">
+                    <constraints nullable="false"/>
+                </column>
+            </createTable>
+        </changeSet>
+
+    </databaseChangeLog>
+
+  Register it in db.changelog-master.xml, after 006:
+
+    <include file="changes/007-create-users-table.xml" relativeToChangelogFile="true"/>
+
+  The table is called "users" because USER is a reserved word in SQL.
+  There is deliberately no sample admin in this changeset (see "The first
+  admin" above).
+
+3.3 The user package
+
+  Create the package com.blog.user, with five classes.
+
+  blog/src/main/java/com/blog/user/Role.java:
+
+    package com.blog.user;
+
+    public enum Role {
+        ADMIN
+    }
+
+  blog/src/main/java/com/blog/user/UserAccount.java:
+
+    package com.blog.user;
+
+    import jakarta.persistence.Column;
+    import jakarta.persistence.Entity;
+    import jakarta.persistence.EnumType;
+    import jakarta.persistence.Enumerated;
+    import jakarta.persistence.GeneratedValue;
+    import jakarta.persistence.GenerationType;
+    import jakarta.persistence.Id;
+    import jakarta.persistence.Table;
+    import org.hibernate.annotations.CreationTimestamp;
+
+    import java.time.LocalDateTime;
+
+    /**
+     * Named UserAccount rather than User to avoid confusion with Spring
+     * Security's {@code User} class.
+     */
+    @Entity
+    @Table(name = "users")
+    public class UserAccount {
+
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(nullable = false, length = 50)
+        private String username;
+
+        @Column(nullable = false)
+        private String passwordHash;
+
+        @Enumerated(EnumType.STRING)
+        @Column(nullable = false, length = 20)
+        private Role role;
+
+        @Column(nullable = false)
+        private boolean enabled = true;
+
+        @CreationTimestamp
+        @Column(nullable = false, updatable = false)
+        private LocalDateTime createdAt;
+
+        protected UserAccount() {
+        }
+
+        public UserAccount(String username, String passwordHash, Role role) {
+            this.username = username;
+            this.passwordHash = passwordHash;
+            this.role = role;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getUsername() {
+            return username;
+        }
+
+        public String getPasswordHash() {
+            return passwordHash;
+        }
+
+        public Role getRole() {
+            return role;
+        }
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public LocalDateTime getCreatedAt() {
+            return createdAt;
+        }
+    }
+
+  EnumType.STRING stores "ADMIN" rather than the enum's position (0). With
+  positions, adding a role before ADMIN would silently turn every admin
+  into the new role.
+
+  blog/src/main/java/com/blog/user/UserAccountRepository.java:
+
+    package com.blog.user;
+
+    import org.springframework.data.jpa.repository.JpaRepository;
+
+    import java.util.Optional;
+
+    interface UserAccountRepository extends JpaRepository<UserAccount, Long> {
+
+        Optional<UserAccount> findByUsername(String username);
+    }
+
+  blog/src/main/java/com/blog/user/DatabaseUserDetailsService.java:
+
+    package com.blog.user;
+
+    import org.springframework.security.core.userdetails.User;
+    import org.springframework.security.core.userdetails.UserDetails;
+    import org.springframework.security.core.userdetails.UserDetailsService;
+    import org.springframework.security.core.userdetails.UsernameNotFoundException;
+    import org.springframework.stereotype.Service;
+    import org.springframework.transaction.annotation.Transactional;
+
+    @Service
+    @Transactional(readOnly = true)
+    class DatabaseUserDetailsService implements UserDetailsService {
+
+        private final UserAccountRepository userAccountRepository;
+
+        DatabaseUserDetailsService(UserAccountRepository userAccountRepository) {
+            this.userAccountRepository = userAccountRepository;
+        }
+
+        @Override
+        public UserDetails loadUserByUsername(String username) {
+            UserAccount account = userAccountRepository.findByUsername(username)
+                    .orElseThrow(() -> new UsernameNotFoundException("No user named '" + username + "'"));
+            return User.withUsername(account.getUsername())
+                    .password(account.getPasswordHash())
+                    .roles(account.getRole().name())
+                    .disabled(!account.isEnabled())
+                    .build();
+        }
+    }
+
+  When there is exactly one UserDetailsService bean and one
+  PasswordEncoder bean, Spring Security wires them into the login form by
+  itself. The class can stay package-private.
+
+  blog/src/main/java/com/blog/user/InitialAdminProperties.java:
+
+    package com.blog.user;
+
+    import org.springframework.boot.context.properties.ConfigurationProperties;
+
+    /**
+     * Credentials for the first admin account, read from blog.admin.username and
+     * blog.admin.password (or the BLOG_ADMIN_USERNAME and BLOG_ADMIN_PASSWORD
+     * environment variables). Only used while the users table is empty.
+     */
+    @ConfigurationProperties("blog.admin")
+    record InitialAdminProperties(String username, String password) {
+
+        boolean isConfigured() {
+            return username != null && !username.isBlank() && password != null && !password.isBlank();
+        }
+    }
+
+  blog/src/main/java/com/blog/user/InitialAdminCreator.java:
+
+    package com.blog.user;
+
+    import org.slf4j.Logger;
+    import org.slf4j.LoggerFactory;
+    import org.springframework.boot.ApplicationArguments;
+    import org.springframework.boot.ApplicationRunner;
+    import org.springframework.boot.context.properties.EnableConfigurationProperties;
+    import org.springframework.security.crypto.password.PasswordEncoder;
+    import org.springframework.stereotype.Component;
+    import org.springframework.transaction.annotation.Transactional;
+
+    /**
+     * Creates the first admin account on startup when there are no users yet.
+     * After that, the configured credentials are ignored.
+     */
+    @Component
+    @EnableConfigurationProperties(InitialAdminProperties.class)
+    class InitialAdminCreator implements ApplicationRunner {
+
+        static final int MIN_PASSWORD_LENGTH = 12;
+
+        private static final Logger log = LoggerFactory.getLogger(InitialAdminCreator.class);
+
+        private final UserAccountRepository userAccountRepository;
+        private final PasswordEncoder passwordEncoder;
+        private final InitialAdminProperties properties;
+
+        InitialAdminCreator(UserAccountRepository userAccountRepository, PasswordEncoder passwordEncoder,
+                            InitialAdminProperties properties) {
+            this.userAccountRepository = userAccountRepository;
+            this.passwordEncoder = passwordEncoder;
+            this.properties = properties;
+        }
+
+        @Override
+        @Transactional
+        public void run(ApplicationArguments args) {
+            if (userAccountRepository.count() > 0) {
+                return;
+            }
+            if (!properties.isConfigured()) {
+                log.warn("There are no user accounts, so nobody can log in. Set blog.admin.username and "
+                        + "blog.admin.password (or BLOG_ADMIN_USERNAME and BLOG_ADMIN_PASSWORD) and restart.");
+                return;
+            }
+            if (properties.password().length() < MIN_PASSWORD_LENGTH) {
+                throw new IllegalStateException(
+                        "blog.admin.password must be at least " + MIN_PASSWORD_LENGTH + " characters long");
+            }
+            String username = properties.username().strip();
+            userAccountRepository.save(new UserAccount(username, passwordEncoder.encode(properties.password()), Role.ADMIN));
+            log.info("Created the first admin account '{}'. You can remove blog.admin.password from the configuration now.",
+                    username);
+        }
+    }
+
+  Notes:
+  - ApplicationRunner runs after the context has started, so Liquibase has
+    already created the users table.
+  - Without settings, the app still starts and logs a warning, so the
+    public blog keeps working. A password that is too short stops the app
+    instead: a weak admin password should never go unnoticed.
+  - The log message names the user but never the password.
+
+3.4 The security configuration
+
+  blog/src/main/java/com/blog/security/SecurityConfig.java:
+
+    package com.blog.security;
+
+    import org.springframework.context.annotation.Bean;
+    import org.springframework.context.annotation.Configuration;
+    import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+    import org.springframework.security.crypto.factory.PasswordEncoderFactories;
+    import org.springframework.security.crypto.password.PasswordEncoder;
+    import org.springframework.security.web.SecurityFilterChain;
+
+    @Configuration
+    public class SecurityConfig {
+
+        @Bean
+        SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+            http
+                    .authorizeHttpRequests(requests -> requests
+                            .requestMatchers("/admin/**").hasRole("ADMIN")
+                            .anyRequest().permitAll())
+                    .formLogin(form -> form
+                            .loginPage("/login")
+                            .defaultSuccessUrl("/admin/posts"))
+                    .logout(logout -> logout
+                            .logoutSuccessUrl("/login?logout"));
+            return http.build();
+        }
+
+        @Bean
+        PasswordEncoder passwordEncoder() {
+            return PasswordEncoderFactories.createDelegatingPasswordEncoder();
+        }
+    }
+
+  Notes:
+  - The class is public because the @WebMvcTest tests import it (3.9).
+  - CSRF protection is on by default, so it does not appear here.
+  - loginPage("/login") replaces the generated login page. Spring Security
+    still handles POST /login itself: it reads the "username" and
+    "password" fields, checks them, and redirects to /login?error when
+    they are wrong.
+  - Static files (/css/**) and the error pages fall under permitAll().
+
+3.5 The login page
+
+  blog/src/main/java/com/blog/web/LoginController.java:
+
+    package com.blog.web;
+
+    import org.springframework.stereotype.Controller;
+    import org.springframework.web.bind.annotation.GetMapping;
+
+    @Controller
+    class LoginController {
+
+        @GetMapping("/login")
+        String login() {
+            return "login";
+        }
+    }
+
+  blog/src/main/resources/templates/login.html:
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head th:replace="~{fragments/layout :: head('Log in')}"></head>
+    <body>
+    <header th:replace="~{fragments/layout :: header('')}"></header>
+
+    <main class="container container--narrow">
+        <h1 class="page-title">Log in</h1>
+
+        <p th:if="${param.error}" class="form__summary" role="alert">The username or password is incorrect.</p>
+        <p th:if="${param.logout}" class="flash" role="status">You have been logged out.</p>
+
+        <form class="form" method="post" th:action="@{/login}">
+            <div class="form__field">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+            </div>
+
+            <div class="form__field">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" autocomplete="current-password" required>
+            </div>
+
+            <div class="form__actions">
+                <button type="submit" class="button">Log in</button>
+            </div>
+        </form>
+    </main>
+
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+    </body>
+    </html>
+
+  ${param.error} reads the ?error query parameter. th:action adds the CSRF
+  field. The autocomplete values let password managers fill in the form.
+
+3.6 The 403 page
+
+  blog/src/main/resources/templates/error/403.html:
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head th:replace="~{fragments/layout :: head('Access denied')}"></head>
+    <body>
+    <header th:replace="~{fragments/layout :: header('')}"></header>
+
+    <main class="container">
+        <h1 class="page-title">Access denied</h1>
+        <p>You do not have permission to open this page, or the form expired. Go back, reload the page, and try again.</p>
+        <p><a th:href="@{/}">&larr; Back to the home page</a></p>
+    </main>
+
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+    </body>
+    </html>
+
+  A missing or old CSRF token also gives 403, for example when you submit
+  a form that was open while your session expired. That is why the text
+  mentions reloading.
+
+3.7 The header
+
+  In blog/src/main/resources/templates/fragments/layout.html, declare the
+  sec namespace on the <html> element:
+
+    <html lang="en" xmlns:th="http://www.thymeleaf.org" xmlns:sec="http://www.thymeleaf.org/extras/spring-security">
+
+  Then replace the Admin link in the header's <nav> with:
+
+    <th:block sec:authorize="hasRole('ADMIN')">
+        <a th:href="@{/admin/posts}" th:classappend="${active == 'admin'} ? 'is-active'">Admin</a>
+        <form class="site-nav__logout" method="post" th:action="@{/logout}">
+            <button type="submit" class="link-button">Log out</button>
+        </form>
+    </th:block>
+
+  Add this to blog/src/main/resources/static/css/main.css, after the
+  .site-nav rules:
+
+    .site-nav__logout .link-button {
+        color: var(--color-muted);
+        text-decoration: none;
+    }
+
+    .site-nav__logout .link-button:hover {
+        color: var(--color-text);
+    }
+
+    .container--narrow {
+        max-width: 420px;
+    }
+
+3.8 Configure the first admin
+
+  At the top of blog/src/main/resources/application.properties, after
+  spring.application.name, add:
+
+    # Machine-specific settings and secrets, such as the first admin's password. Git ignores this file.
+    spring.config.import=optional:file:./application-local.properties
+
+  Add the file to blog/.gitignore:
+
+    application-local.properties
+
+  Create blog/application-local.properties, next to pom.xml:
+
+    blog.admin.username=admin
+    blog.admin.password=<at least 12 characters>
+
+  Use a real password, for example one generated by your password manager.
+  Check that Git ignores the file:
+
+    git check-ignore -v application-local.properties
+
+  Expected: the .gitignore line that matches. If nothing is printed, the
+  file would be committed.
+  "optional:" means the app also starts without the file. The path is
+  relative to the working directory, which is blog/ when you use
+  .\mvnw spring-boot:run.
+
+3.9 Update the existing controller tests
+
+  @WebMvcTest loads Spring Security, but not your SecurityConfig, because
+  it only picks up web components. Without the import, the tests would run
+  against Spring Boot's defaults (everything locked) instead of your
+  rules. Add the import to HomeControllerTest, PostControllerTest, and
+  AdminPostControllerTest:
+
+    import com.blog.security.SecurityConfig;
+    import org.springframework.context.annotation.Import;
+
+    @WebMvcTest(HomeController.class)
+    @Import(SecurityConfig.class)
+    class HomeControllerTest {
+
+  In AdminPostControllerTest:
+  - Log in a fake admin for every test, at class level:
+
+      import org.springframework.security.test.context.support.WithAnonymousUser;
+      import org.springframework.security.test.context.support.WithMockUser;
+
+      import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+
+      @WebMvcTest(AdminPostController.class)
+      @Import(SecurityConfig.class)
+      @WithMockUser(roles = "ADMIN")
+      class AdminPostControllerTest {
+
+  - Add .with(csrf()) to every POST, for example:
+
+      mockMvc.perform(post("/admin/posts/7/delete").with(csrf()))
+
+  - Add the security tests:
+
+    @Test
+    @WithAnonymousUser
+    void visitorsAreSentToTheLoginPage() throws Exception {
+        mockMvc.perform(get("/admin/posts"))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(redirectedUrl("/login"));
+    }
+
+    @Test
+    @WithAnonymousUser
+    void visitorsCannotDeletePosts() throws Exception {
+        mockMvc.perform(post("/admin/posts/7/delete").with(csrf()))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(redirectedUrl("/login"));
+
+        verify(postService, never()).delete(any());
+    }
+
+    @Test
+    @WithMockUser(roles = "READER")
+    void usersWithoutTheAdminRoleAreForbidden() throws Exception {
+        mockMvc.perform(get("/admin/posts"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void requestsWithoutACsrfTokenAreRejected() throws Exception {
+        mockMvc.perform(post("/admin/posts/7/delete"))
+                .andExpect(status().isForbidden());
+
+        verify(postService, never()).delete(any());
+    }
+
+    @Test
+    void formsContainACsrfToken() throws Exception {
+        mockMvc.perform(get("/admin/posts/new"))
+                .andExpect(content().string(containsString("name=\"_csrf\"")));
+    }
+
+  Method-level annotations win over the class-level @WithMockUser, so
+  @WithAnonymousUser and roles = "READER" override the admin for one test.
+
+  In HomeControllerTest, add (with the WithMockUser import):
+
+    @Test
+    void visitorsSeeNoAdminLinks() throws Exception {
+        given(postService.findPublished(1)).willReturn(Page.empty());
+
+        mockMvc.perform(get("/"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(not(containsString("href=\"/admin/posts\""))))
+                .andExpect(content().string(not(containsString("Log out"))));
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    void adminsSeeAdminLinkAndLogout() throws Exception {
+        given(postService.findPublished(1)).willReturn(Page.empty());
+
+        mockMvc.perform(get("/"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("href=\"/admin/posts\"")))
+                .andExpect(content().string(containsString("action=\"/logout\"")))
+                .andExpect(content().string(containsString("name=\"_csrf\"")));
+    }
+
+3.10 New tests
+
+  blog/src/test/java/com/blog/user/InitialAdminCreatorTest.java, a plain
+  unit test without Spring:
+
+    package com.blog.user;
+
+    import org.junit.jupiter.api.Test;
+    import org.springframework.security.crypto.factory.PasswordEncoderFactories;
+    import org.springframework.security.crypto.password.PasswordEncoder;
+
+    import static org.assertj.core.api.Assertions.assertThat;
+    import static org.assertj.core.api.Assertions.assertThatThrownBy;
+    import static org.mockito.ArgumentMatchers.any;
+    import static org.mockito.ArgumentMatchers.argThat;
+    import static org.mockito.BDDMockito.given;
+    import static org.mockito.Mockito.mock;
+    import static org.mockito.Mockito.never;
+    import static org.mockito.Mockito.verify;
+
+    class InitialAdminCreatorTest {
+
+        private static final String PASSWORD = "a-long-enough-password";
+
+        private final UserAccountRepository repository = mock(UserAccountRepository.class);
+        private final PasswordEncoder passwordEncoder = PasswordEncoderFactories.createDelegatingPasswordEncoder();
+
+        @Test
+        void createsTheAdminWithAHashedPasswordWhenThereAreNoUsers() {
+            given(repository.count()).willReturn(0L);
+
+            creator(" admin ", PASSWORD).run(null);
+
+            verify(repository).save(argThat(account ->
+                    account.getUsername().equals("admin")
+                            && account.getRole() == Role.ADMIN
+                            && account.getPasswordHash().startsWith("{bcrypt}")
+                            && passwordEncoder.matches(PASSWORD, account.getPasswordHash())));
+        }
+
+        @Test
+        void doesNothingWhenUsersExist() {
+            given(repository.count()).willReturn(1L);
+
+            creator("admin", PASSWORD).run(null);
+
+            verify(repository, never()).save(any());
+        }
+
+        @Test
+        void doesNothingWhenNotConfigured() {
+            given(repository.count()).willReturn(0L);
+
+            creator(null, null).run(null);
+            creator("admin", "  ").run(null);
+
+            verify(repository, never()).save(any());
+        }
+
+        @Test
+        void refusesShortPasswords() {
+            given(repository.count()).willReturn(0L);
+
+            assertThatThrownBy(() -> creator("admin", "short").run(null))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("at least " + InitialAdminCreator.MIN_PASSWORD_LENGTH);
+            verify(repository, never()).save(any());
+        }
+
+        @Test
+        void passwordHashesAreSalted() {
+            assertThat(passwordEncoder.encode(PASSWORD)).isNotEqualTo(passwordEncoder.encode(PASSWORD));
+        }
+
+        private InitialAdminCreator creator(String username, String password) {
+            return new InitialAdminCreator(repository, passwordEncoder, new InitialAdminProperties(username, password));
+        }
+    }
+
+  blog/src/test/java/com/blog/user/LoginFlowTest.java, the whole chain on
+  a real MySQL in Testcontainers:
+
+    package com.blog.user;
+
+    import com.blog.TestcontainersConfiguration;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.test.context.SpringBootTest;
+    import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+    import org.springframework.context.annotation.Import;
+    import org.springframework.mock.web.MockHttpSession;
+    import org.springframework.test.context.ActiveProfiles;
+    import org.springframework.test.web.servlet.MockMvc;
+    import org.springframework.test.web.servlet.MvcResult;
+
+    import static org.assertj.core.api.Assertions.assertThat;
+    import static org.hamcrest.Matchers.containsString;
+    import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.formLogin;
+    import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+    import static org.springframework.security.test.web.servlet.response.SecurityMockMvcResultMatchers.authenticated;
+    import static org.springframework.security.test.web.servlet.response.SecurityMockMvcResultMatchers.unauthenticated;
+    import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+    import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+    /**
+     * The whole chain on a real database: the first admin is created from
+     * configuration, and logging in checks the password against its hash.
+     */
+    @SpringBootTest(properties = {
+            "blog.admin.username=" + LoginFlowTest.USERNAME,
+            "blog.admin.password=" + LoginFlowTest.PASSWORD
+    })
+    @AutoConfigureMockMvc
+    @Import(TestcontainersConfiguration.class)
+    @ActiveProfiles("test")
+    class LoginFlowTest {
+
+        static final String USERNAME = "editor";
+        static final String PASSWORD = "correct-horse-battery-staple";
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @Autowired
+        private UserAccountRepository userAccountRepository;
+
+        @Test
+        void createsTheConfiguredAdminWithAHashedPassword() {
+            UserAccount account = userAccountRepository.findByUsername(USERNAME).orElseThrow();
+
+            assertThat(account.getRole()).isEqualTo(Role.ADMIN);
+            assertThat(account.getPasswordHash()).startsWith("{bcrypt}").doesNotContain(PASSWORD);
+        }
+
+        @Test
+        void loginPageIsPublic() throws Exception {
+            mockMvc.perform(get("/login"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("name=\"_csrf\"")));
+        }
+
+        @Test
+        void adminPagesRequireLogin() throws Exception {
+            mockMvc.perform(get("/admin/posts"))
+                    .andExpect(status().is3xxRedirection())
+                    .andExpect(redirectedUrl("/login"));
+        }
+
+        @Test
+        void wrongPasswordIsRejected() throws Exception {
+            mockMvc.perform(formLogin().user(USERNAME).password("wrong-password"))
+                    .andExpect(redirectedUrl("/login?error"))
+                    .andExpect(unauthenticated());
+        }
+
+        @Test
+        void unknownUserIsRejected() throws Exception {
+            mockMvc.perform(formLogin().user("nobody").password(PASSWORD))
+                    .andExpect(redirectedUrl("/login?error"))
+                    .andExpect(unauthenticated());
+        }
+
+        @Test
+        void loginGivesAccessToTheAdminPagesUntilLogout() throws Exception {
+            MvcResult login = mockMvc.perform(formLogin().user(USERNAME).password(PASSWORD))
+                    .andExpect(redirectedUrl("/admin/posts"))
+                    .andExpect(authenticated().withUsername(USERNAME).withRoles("ADMIN"))
+                    .andReturn();
+            MockHttpSession session = (MockHttpSession) login.getRequest().getSession(false);
+
+            mockMvc.perform(get("/admin/posts").session(session))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("Log out")));
+
+            mockMvc.perform(post("/logout").with(csrf()).session(session))
+                    .andExpect(redirectedUrl("/login?logout"))
+                    .andExpect(unauthenticated());
+
+            mockMvc.perform(get("/admin/posts").session(session))
+                    .andExpect(redirectedUrl("/login"));
+        }
+    }
+
+  Notes:
+  - formLogin() posts to /login with the username, password, and a valid
+    CSRF token, like the real form.
+  - The properties in @SpringBootTest take priority over
+    application-local.properties, so the test does not depend on your
+    local password.
+  - The last test reuses the session from the login, the way a browser
+    reuses its cookie.
+
+
+4. VERIFY
+---------
+  a) Run the tests:
+
+       .\mvnw verify
+
+     Expected: "Tests run: 81, Failures: 0" and "BUILD SUCCESS".
+
+  b) Run the application:
+
+       .\mvnw spring-boot:run
+
+     Liquibase runs 1 changeset (007), and the log shows:
+
+       Created the first admin account 'admin'. You can remove blog.admin.password from the configuration now.
+
+     Then:
+     1. Open http://localhost:8080. The header shows Home and About, but
+        no Admin.
+     2. Open http://localhost:8080/admin/posts. You land on the login page.
+     3. Log in with a wrong password: "The username or password is
+        incorrect."
+     4. Log in with the password from application-local.properties. You
+        are back on /admin/posts, and the header shows Admin and Log out.
+     5. In the browser's developer tools, look at the "New post" form. It
+        contains <input type="hidden" name="_csrf" ...>.
+     6. Click "Log out": "You have been logged out." /admin/posts sends you
+        to the login page again.
+     7. Restart the app. The admin message does not appear again, because
+        the user already exists.
+
+  c) Optional: check what is stored:
+
+       docker exec -it blog-mysql mysql -ubloguser -pblogpass blogdb -e "SELECT username, role, LEFT(password_hash, 12) FROM users;"
+
+     Expected: admin, ADMIN, {bcrypt}$2a$1 (never the password itself).
+
+  d) Optional: prove CSRF protection works. In the developer tools, delete
+     the hidden _csrf field from a delete form, then click Delete. You get
+     the "Access denied" page, and the post is still there.
+
+  Troubleshooting
+  - "Schema validation: wrong column type encountered in column [enabled]
+    ... found [tinyint], but expecting [bit]": the changeset uses type
+    BOOLEAN. Use BIT(1). If 007 already ran with the wrong type, drop the
+    users table and delete the 007 row from DATABASECHANGELOG, then
+    restart (only on your own dev database).
+  - The browser shows Spring's plain login page, and the log prints "Using
+    generated security password": SecurityConfig is not being picked up.
+    It must be in a package under com.blog, and annotated with
+    @Configuration.
+  - The log says "There are no user accounts, so nobody can log in":
+    application-local.properties was not found. It must be next to
+    pom.xml, and you must start the app from the blog folder.
+  - The app stops with "blog.admin.password must be at least 12
+    characters long": choose a longer password.
+  - You changed the password in application-local.properties, but the old
+    one still works: that is expected. The settings only create the first
+    admin. On your dev database, you can delete the row (DELETE FROM
+    users;) and restart to create it again.
+  - Every form submit gives "Access denied": the form uses action="..."
+    instead of th:action="@{...}", so it has no CSRF token.
+  - @WebMvcTest tests suddenly get 401 or 403 everywhere: the test class
+    lacks @Import(SecurityConfig.class), so Spring Boot's default rules
+    apply.
+  - Admin and Log out are not shown after login: the xmlns:sec namespace is
+    missing, or thymeleaf-extras-springsecurity6 is not in the pom.
+
+
+5. COMMIT
+---------
+  git status    (application-local.properties must NOT be listed)
+  git add -A
+  git commit -m "Step 006: Login with Spring Security, users table, and first admin from configuration"

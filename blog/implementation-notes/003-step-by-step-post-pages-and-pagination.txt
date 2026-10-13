@@ -1,0 +1,1004 @@
+STEP 003 - POST DETAIL PAGES AND PAGINATION
+===========================================
+
+
+1. GOAL
+-------
+At the end of this step you will have:
+- A slug column on posts (for example "why-liquibase-owns-the-schema"),
+  added by a migration that also fills it in for existing rows
+- Post pages at readable URLs: /posts/why-liquibase-owns-the-schema
+- A styled 404 page for unknown posts, drafts, and unknown URLs, plus a
+  generic error page
+- A paginated home page (5 posts per page) with "Newer" and "Older" links
+- More sample posts in development, so there is a second page to see
+
+
+2. CONCEPTS
+-----------
+Slugs instead of ids in URLs
+  /posts/why-liquibase-owns-the-schema says what the page is about, which
+  helps readers and search engines, and does not reveal how many rows the
+  table has. A unique constraint in the database guarantees that two posts
+  can never share a URL. Step 005 generates slugs from titles when posts
+  are created in the admin pages. For now, they come from the migration and
+  the sample data.
+
+Changing a table that already has data
+  Adding a NOT NULL column to a table with rows takes three moves in one
+  changeset: add the column as nullable, fill it in for the existing rows,
+  then add the NOT NULL and UNIQUE constraints. If the fill-in produced a
+  duplicate, the unique constraint fails and the whole changeset is rolled
+  back, so you never end up half-migrated.
+  (MySQL commits automatically after each schema change, so a "rollback" on
+  MySQL really means Liquibase stops and records nothing. Test migrations
+  on a copy of real data before running them in production.)
+
+Never edit a changeset that has run, even in development
+  Liquibase stores a checksum of every changeset it has run and refuses to
+  start if a file changes afterwards. This happens easily in development:
+  if the app restarts (DevTools) while you are still editing a changeset,
+  it runs the half-finished version. Ways out, from safest to most drastic:
+  - Write a new changeset that fixes the old one (always right in shared
+    or production databases).
+  - Development only, when the change does not affect what the changeset
+    did (for example reordering lines): clear the stored checksum so
+    Liquibase records the new one:
+      UPDATE DATABASECHANGELOG SET MD5SUM = NULL WHERE ID = '<changeset id>';
+  - Development only: reset the database with docker compose down -v.
+
+Pagination: 1-based for visitors, 0-based for Spring Data
+  Visitors see ?page=2. Spring Data's PageRequest counts from 0. The service
+  takes the 1-based number and does the conversion in one place. The
+  controller returns 404 for page 0, negative pages, and pages past the
+  end, so every page URL either shows posts or clearly does not exist.
+  Page 1 has no ?page parameter, so the home page has only one URL.
+
+Stable sort order
+  Posts are sorted by published_at, then by id. Without the second key, two
+  posts published at the same moment could swap places between page loads
+  and show up on two pages, or on none.
+
+How 404 pages work in Spring Boot
+  Throwing an exception annotated with @ResponseStatus(NOT_FOUND) makes
+  Spring send a 404. Spring Boot's error handling then looks for
+  templates/error/404.html, and falls back to templates/error.html for any
+  other error. Unmatched URLs such as /no-such-page take the same route.
+  No controller advice is needed.
+
+MockMvc vs. a real server
+  MockMvc (@WebMvcTest) checks the status code, but it does not forward to
+  the error page, so it cannot show what visitors actually see. ErrorPageTest
+  starts the real server on a random port and requests pages over HTTP with
+  Java's built-in HttpClient.
+
+
+3. INSTRUCTIONS
+---------------
+
+3.1 Add the slug column
+
+  Create blog/src/main/resources/db/changelog/changes/003-add-post-slug.xml:
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <databaseChangeLog
+            xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+        <changeSet id="003-add-post-slug" author="blog">
+            <addColumn tableName="posts">
+                <column name="slug" type="VARCHAR(200)" afterColumn="title"/>
+            </addColumn>
+
+            <!-- Backfill existing rows: "Why Liquibase owns the schema" becomes "why-liquibase-owns-the-schema" -->
+            <sql>
+                UPDATE posts
+                SET slug = TRIM(BOTH '-' FROM LOWER(REGEXP_REPLACE(title, '[^A-Za-z0-9]+', '-')))
+            </sql>
+
+            <addNotNullConstraint tableName="posts" columnName="slug" columnDataType="VARCHAR(200)"/>
+            <addUniqueConstraint tableName="posts" columnNames="slug" constraintName="uk_posts_slug"/>
+        </changeSet>
+
+    </databaseChangeLog>
+
+  How the backfill works: REGEXP_REPLACE turns every run of characters that
+  are not letters or digits into one "-", LOWER makes it lower case, and
+  TRIM removes a leading or trailing "-". This changeset has no context, so
+  it runs everywhere, including on data that exists in production.
+
+  The unique constraint also creates an index, which the lookup by slug
+  uses.
+
+
+3.2 More sample posts
+
+  Create blog/src/main/resources/db/changelog/changes/004-insert-more-sample-posts.xml:
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <databaseChangeLog
+            xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+        <changeSet id="004-insert-more-sample-posts" author="blog" contextFilter="dev">
+            <insert tableName="posts">
+                <column name="title" value="Package by feature"/>
+                <column name="slug" value="package-by-feature"/>
+                <column name="summary" value="Grouping code by what it does instead of by what kind of class it is."/>
+                <column name="content" value="Putting the entity, repository, and service for posts in one package means the repository can stay package-private.&#10;&#10;Controllers have to go through the service, which keeps database access in one place."/>
+                <column name="published_at" valueDate="2026-08-01T10:00:00"/>
+                <column name="created_at" valueDate="2026-08-01T10:00:00"/>
+                <column name="updated_at" valueDate="2026-08-01T10:00:00"/>
+            </insert>
+            <insert tableName="posts">
+                <column name="title" value="Constructor injection"/>
+                <column name="slug" value="constructor-injection"/>
+                <column name="summary" value="Why final fields and constructors beat @Autowired on fields."/>
+                <column name="content" value="With constructor injection, dependencies are explicit and the object is always fully initialised.&#10;&#10;It also makes classes easy to create in plain unit tests."/>
+                <column name="published_at" valueDate="2026-08-10T10:00:00"/>
+                <column name="created_at" valueDate="2026-08-10T10:00:00"/>
+                <column name="updated_at" valueDate="2026-08-10T10:00:00"/>
+            </insert>
+            <insert tableName="posts">
+                <column name="title" value="Read-only transactions"/>
+                <column name="slug" value="read-only-transactions"/>
+                <column name="summary" value="What @Transactional(readOnly = true) actually does."/>
+                <column name="content" value="Hibernate skips dirty checking for read-only transactions, and the JDBC connection is flagged as read-only.&#10;&#10;Write methods override it with a plain @Transactional."/>
+                <column name="published_at" valueDate="2026-08-20T10:00:00"/>
+                <column name="created_at" valueDate="2026-08-20T10:00:00"/>
+                <column name="updated_at" valueDate="2026-08-20T10:00:00"/>
+            </insert>
+            <insert tableName="posts">
+                <column name="title" value="Thymeleaf fragments"/>
+                <column name="slug" value="thymeleaf-fragments"/>
+                <column name="summary" value="A shared layout without an extra layout library."/>
+                <column name="content" value="th:fragment defines a reusable piece of a page and th:replace pulls it in.&#10;&#10;Fragment parameters let each page set its own title and active navigation link."/>
+                <column name="published_at" valueDate="2026-08-25T10:00:00"/>
+                <column name="created_at" valueDate="2026-08-25T10:00:00"/>
+                <column name="updated_at" valueDate="2026-08-25T10:00:00"/>
+            </insert>
+        </changeSet>
+
+    </databaseChangeLog>
+
+  &#10; is a line break written inside an XML attribute. The content has
+  blank lines between paragraphs, and the post page keeps them (see the
+  CSS in 3.8).
+
+  This is a new changeset rather than an edit of 002, because 002 has
+  already run. It comes after 003, so it can fill in the slug directly.
+
+  Register both in db.changelog-master.xml:
+
+        <include file="changes/003-add-post-slug.xml" relativeToChangelogFile="true"/>
+        <include file="changes/004-insert-more-sample-posts.xml" relativeToChangelogFile="true"/>
+
+
+3.3 Entity: add the slug
+
+  In Post.java, add the field below title:
+
+        @Column(nullable = false, length = 200)
+        private String slug;
+
+  Replace the constructor so a slug is always required:
+
+        public Post(String title, String slug, String summary, String content) {
+            this.title = title;
+            this.slug = slug;
+            this.summary = summary;
+            this.content = content;
+        }
+
+  Add a getter next to the others:
+
+        public String getSlug() {
+            return slug;
+        }
+
+
+3.4 Repository, view records, and exception
+
+  Replace PostRepository.java:
+
+    package com.blog.post;
+
+    import org.springframework.data.domain.Page;
+    import org.springframework.data.domain.Pageable;
+    import org.springframework.data.jpa.repository.JpaRepository;
+
+    import java.util.Optional;
+
+    interface PostRepository extends JpaRepository<Post, Long> {
+
+        Page<Post> findByPublishedAtIsNotNull(Pageable pageable);
+
+        Optional<Post> findBySlugAndPublishedAtIsNotNull(String slug);
+    }
+
+  The sort order is no longer in the method name. It travels inside the
+  Pageable, so the service decides it. Spring Data also runs a COUNT query
+  so the page knows how many pages there are in total.
+
+  findBySlugAndPublishedAtIsNotNull only finds published posts, so a draft's
+  URL returns 404 even if someone guesses it.
+
+  Replace PostSummary.java (adds slug, for links):
+
+    package com.blog.post;
+
+    import java.time.LocalDateTime;
+
+    public record PostSummary(Long id, String title, String slug, String summary, LocalDateTime publishedAt) {
+
+        static PostSummary from(Post post) {
+            return new PostSummary(post.getId(), post.getTitle(), post.getSlug(), post.getSummary(), post.getPublishedAt());
+        }
+    }
+
+  Create PostDetail.java (everything the post page shows):
+
+    package com.blog.post;
+
+    import java.time.LocalDateTime;
+
+    public record PostDetail(String title, String slug, String summary, String content, LocalDateTime publishedAt) {
+
+        static PostDetail from(Post post) {
+            return new PostDetail(post.getTitle(), post.getSlug(), post.getSummary(), post.getContent(), post.getPublishedAt());
+        }
+    }
+
+  Create PostNotFoundException.java:
+
+    package com.blog.post;
+
+    import org.springframework.http.HttpStatus;
+    import org.springframework.web.bind.annotation.ResponseStatus;
+
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public class PostNotFoundException extends RuntimeException {
+
+        public PostNotFoundException(String slug) {
+            super("No published post with slug '" + slug + "'");
+        }
+    }
+
+
+3.5 Service
+
+  Replace PostService.java:
+
+    package com.blog.post;
+
+    import org.springframework.data.domain.Page;
+    import org.springframework.data.domain.PageRequest;
+    import org.springframework.data.domain.Sort;
+    import org.springframework.stereotype.Service;
+    import org.springframework.transaction.annotation.Transactional;
+
+    @Service
+    @Transactional(readOnly = true)
+    public class PostService {
+
+        public static final int PAGE_SIZE = 5;
+
+        private static final Sort NEWEST_FIRST = Sort.by(Sort.Order.desc("publishedAt"), Sort.Order.desc("id"));
+
+        private final PostRepository postRepository;
+
+        PostService(PostRepository postRepository) {
+            this.postRepository = postRepository;
+        }
+
+        /**
+         * @param pageNumber 1-based page number, as shown to visitors
+         */
+        public Page<PostSummary> findPublished(int pageNumber) {
+            PageRequest pageRequest = PageRequest.of(pageNumber - 1, PAGE_SIZE, NEWEST_FIRST);
+            return postRepository.findByPublishedAtIsNotNull(pageRequest).map(PostSummary::from);
+        }
+
+        public PostDetail findPublishedBySlug(String slug) {
+            return postRepository.findBySlugAndPublishedAtIsNotNull(slug)
+                    .map(PostDetail::from)
+                    .orElseThrow(() -> new PostNotFoundException(slug));
+        }
+    }
+
+  Page.map(...) converts the entities to records and keeps the page
+  information (page number, total pages), which the template needs for its
+  links. Sort uses entity field names (publishedAt), not column names.
+
+
+3.6 Controllers
+
+  Replace HomeController.java:
+
+    package com.blog.web;
+
+    import com.blog.post.PostService;
+    import com.blog.post.PostSummary;
+    import org.springframework.data.domain.Page;
+    import org.springframework.http.HttpStatus;
+    import org.springframework.stereotype.Controller;
+    import org.springframework.ui.Model;
+    import org.springframework.web.bind.annotation.GetMapping;
+    import org.springframework.web.bind.annotation.RequestParam;
+    import org.springframework.web.server.ResponseStatusException;
+
+    @Controller
+    class HomeController {
+
+        private final PostService postService;
+
+        HomeController(PostService postService) {
+            this.postService = postService;
+        }
+
+        @GetMapping("/")
+        String home(@RequestParam(defaultValue = "1") int page, Model model) {
+            if (page < 1) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            }
+            Page<PostSummary> posts = postService.findPublished(page);
+            if (page > 1 && page > posts.getTotalPages()) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            }
+            model.addAttribute("posts", posts);
+            return "home";
+        }
+
+        @GetMapping("/about")
+        String about() {
+            return "about";
+        }
+    }
+
+  Page 1 with no posts at all is still a valid page (it shows "No posts
+  have been published yet."), which is why the second check has page > 1.
+  A non-numeric value such as ?page=abc gets a 400 Bad Request from Spring
+  automatically.
+
+  Create PostController.java:
+
+    package com.blog.web;
+
+    import com.blog.post.PostService;
+    import org.springframework.stereotype.Controller;
+    import org.springframework.ui.Model;
+    import org.springframework.web.bind.annotation.GetMapping;
+    import org.springframework.web.bind.annotation.PathVariable;
+
+    @Controller
+    class PostController {
+
+        private final PostService postService;
+
+        PostController(PostService postService) {
+            this.postService = postService;
+        }
+
+        @GetMapping("/posts/{slug}")
+        String post(@PathVariable String slug, Model model) {
+            model.addAttribute("post", postService.findPublishedBySlug(slug));
+            return "post";
+        }
+    }
+
+
+3.7 Templates
+
+  In fragments/layout.html, add a pagination fragment between the header
+  and the footer fragments:
+
+    <nav th:fragment="pagination(page, baseUrl)" th:if="${page.totalPages > 1}" class="pagination" aria-label="Pagination">
+        <a th:if="${page.hasPrevious()}" rel="prev" class="pagination__link"
+           th:href="${page.number == 1} ? @{${baseUrl}} : @{${baseUrl}(page=${page.number})}">&larr; Newer posts</a>
+        <span class="pagination__status"
+              th:text="|Page ${page.number + 1} of ${page.totalPages}|">Page 1 of 2</span>
+        <a th:if="${page.hasNext()}" rel="next" class="pagination__link"
+           th:href="@{${baseUrl}(page=${page.number + 2})}">Older posts &rarr;</a>
+    </nav>
+
+  How the numbers work: page.number is 0-based, so on the page visitors
+  call "2", page.number is 1. The previous page is then page.number (1,
+  which is the plain base URL) and the next is page.number + 2. The
+  baseUrl parameter makes the fragment reusable for category, tag, and
+  search pages in steps 007 and 008. |...| is Thymeleaf's string template
+  syntax.
+
+  Replace home.html. Titles become links, and the pagination fragment is
+  added after the posts:
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head th:replace="~{fragments/layout :: head('Home')}"></head>
+    <body>
+    <header th:replace="~{fragments/layout :: header('home')}"></header>
+
+    <main class="container">
+        <h1 class="page-title">Latest posts</h1>
+
+        <p th:if="${posts.isEmpty()}" class="empty-state">No posts have been published yet.</p>
+
+        <article th:each="post : ${posts}" class="post-card">
+            <h2 class="post-card__title">
+                <a th:href="@{/posts/{slug}(slug=${post.slug})}" th:text="${post.title}">Post title</a>
+            </h2>
+            <time class="post-card__date"
+                  th:datetime="${#temporals.formatISO(post.publishedAt)}"
+                  th:text="${#temporals.format(post.publishedAt, 'd MMMM yyyy')}">1 January 2026</time>
+            <p class="post-card__summary" th:if="${post.summary}" th:text="${post.summary}">Summary</p>
+        </article>
+
+        <nav th:replace="~{fragments/layout :: pagination(${posts}, '/')}"></nav>
+    </main>
+
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+    </body>
+    </html>
+
+  th:each works on a Page directly, because Page is iterable. In
+  @{/posts/{slug}(slug=${post.slug})}, Thymeleaf URL-encodes the value.
+
+  Create post.html:
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head th:replace="~{fragments/layout :: head(${post.title})}"></head>
+    <body>
+    <header th:replace="~{fragments/layout :: header('')}"></header>
+
+    <main class="container">
+        <article class="post">
+            <header class="post__header">
+                <h1 class="page-title" th:text="${post.title}">Post title</h1>
+                <time class="post__date"
+                      th:datetime="${#temporals.formatISO(post.publishedAt)}"
+                      th:text="${#temporals.format(post.publishedAt, 'd MMMM yyyy')}">1 January 2026</time>
+            </header>
+
+            <p class="post__summary" th:if="${post.summary}" th:text="${post.summary}">Summary</p>
+
+            <div class="prose post__content" th:text="${post.content}">Content</div>
+        </article>
+
+        <p><a th:href="@{/}">&larr; All posts</a></p>
+    </main>
+
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+    </body>
+    </html>
+
+  header('') highlights no navigation link, since a post page is not one
+  of the menu items. The content is still plain, escaped text. Step 004
+  turns it into rendered Markdown.
+
+  Create templates/error/404.html:
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head th:replace="~{fragments/layout :: head('Page not found')}"></head>
+    <body>
+    <header th:replace="~{fragments/layout :: header('')}"></header>
+
+    <main class="container">
+        <h1 class="page-title">Page not found</h1>
+        <p>The page you are looking for does not exist or has been moved.</p>
+        <p><a th:href="@{/}">&larr; Back to the home page</a></p>
+    </main>
+
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+    </body>
+    </html>
+
+  Create templates/error.html (every other error, for example a 500):
+
+    <!DOCTYPE html>
+    <html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head th:replace="~{fragments/layout :: head('Something went wrong')}"></head>
+    <body>
+    <header th:replace="~{fragments/layout :: header('')}"></header>
+
+    <main class="container">
+        <h1 class="page-title">Something went wrong</h1>
+        <p>An unexpected error occurred. Please try again later.</p>
+        <p><a th:href="@{/}">&larr; Back to the home page</a></p>
+    </main>
+
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+    </body>
+    </html>
+
+  The error page deliberately shows no exception details. Visitors cannot
+  act on them, and they can reveal how the application works inside. The
+  details are in the server log.
+
+
+3.8 CSS
+
+  Append to static/css/main.css, after the .post-card__summary rule:
+
+    .post-card__title a {
+        color: var(--color-text);
+        text-decoration: none;
+    }
+
+    .post-card__title a:hover {
+        color: var(--color-accent);
+    }
+
+    /* Post page */
+
+    .post__header {
+        margin-bottom: 1.5rem;
+    }
+
+    .post__header .page-title {
+        margin-bottom: 0.25rem;
+    }
+
+    .post__date {
+        color: var(--color-muted);
+        font-size: 0.875rem;
+    }
+
+    .post__summary {
+        font-size: 1.125rem;
+        color: var(--color-muted);
+    }
+
+    .post__content {
+        white-space: pre-line;
+        margin-bottom: 2rem;
+    }
+
+    /* Pagination */
+
+    .pagination {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-top: 2rem;
+    }
+
+    .pagination__status {
+        color: var(--color-muted);
+        font-size: 0.875rem;
+    }
+
+    .pagination__link {
+        text-decoration: none;
+    }
+
+  white-space: pre-line keeps the line breaks in the content, so paragraphs
+  stay apart until Markdown takes over in step 004.
+
+
+3.9 Tests
+
+  Replace blog/src/test/java/com/blog/post/PostRepositoryTest.java. The
+  query tests move to the service test below; the repository test now
+  checks what only the database can guarantee:
+
+    package com.blog.post;
+
+    import com.blog.TestcontainersConfiguration;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
+    import org.springframework.context.annotation.Import;
+    import org.springframework.dao.DataIntegrityViolationException;
+    import org.springframework.test.context.ActiveProfiles;
+
+    import static org.assertj.core.api.Assertions.assertThat;
+    import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+    @DataJpaTest
+    @Import(TestcontainersConfiguration.class)
+    @ActiveProfiles("test")
+    class PostRepositoryTest {
+
+        @Autowired
+        private PostRepository postRepository;
+
+        @Test
+        void setsTimestampsOnSave() {
+            Post saved = postRepository.saveAndFlush(new Post("Title", "title", null, "content"));
+
+            assertThat(saved.getCreatedAt()).isNotNull();
+            assertThat(saved.getUpdatedAt()).isNotNull();
+        }
+
+        @Test
+        void rejectsDuplicateSlugs() {
+            postRepository.saveAndFlush(new Post("First", "same-slug", null, "content"));
+
+            assertThatThrownBy(() -> postRepository.saveAndFlush(new Post("Second", "same-slug", null, "content")))
+                    .isInstanceOf(DataIntegrityViolationException.class);
+        }
+    }
+
+  Create blog/src/test/java/com/blog/post/PostServiceTest.java:
+
+    package com.blog.post;
+
+    import com.blog.TestcontainersConfiguration;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
+    import org.springframework.context.annotation.Import;
+    import org.springframework.data.domain.Page;
+    import org.springframework.test.context.ActiveProfiles;
+
+    import java.time.LocalDateTime;
+
+    import static org.assertj.core.api.Assertions.assertThat;
+    import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+    @DataJpaTest
+    @Import({TestcontainersConfiguration.class, PostService.class})
+    @ActiveProfiles("test")
+    class PostServiceTest {
+
+        @Autowired
+        private PostRepository postRepository;
+
+        @Autowired
+        private PostService postService;
+
+        @Test
+        void listsOnlyPublishedPostsNewestFirst() {
+            savePublished("Older", LocalDateTime.of(2026, 1, 1, 10, 0));
+            savePublished("Newer", LocalDateTime.of(2026, 2, 1, 10, 0));
+            postRepository.save(new Post("Draft", "draft", null, "content"));
+
+            assertThat(postService.findPublished(1).getContent())
+                    .extracting(PostSummary::title)
+                    .containsExactly("Newer", "Older");
+        }
+
+        @Test
+        void splitsPostsIntoPages() {
+            int total = PostService.PAGE_SIZE + 2;
+            for (int i = 1; i <= total; i++) {
+                savePublished("Post " + i, LocalDateTime.of(2026, 1, i, 10, 0));
+            }
+
+            Page<PostSummary> firstPage = postService.findPublished(1);
+            Page<PostSummary> secondPage = postService.findPublished(2);
+
+            assertThat(firstPage.getTotalPages()).isEqualTo(2);
+            assertThat(firstPage.getContent()).hasSize(PostService.PAGE_SIZE);
+            assertThat(firstPage.getContent().getFirst().title()).isEqualTo("Post " + total);
+            assertThat(secondPage.getContent()).extracting(PostSummary::title).containsExactly("Post 2", "Post 1");
+        }
+
+        @Test
+        void findsPublishedPostBySlug() {
+            savePublished("Hello world", LocalDateTime.of(2026, 1, 1, 10, 0));
+
+            assertThat(postService.findPublishedBySlug("hello-world").title()).isEqualTo("Hello world");
+        }
+
+        @Test
+        void doesNotFindDraftsBySlug() {
+            postRepository.save(new Post("Secret draft", "secret-draft", null, "content"));
+
+            assertThatThrownBy(() -> postService.findPublishedBySlug("secret-draft"))
+                    .isInstanceOf(PostNotFoundException.class);
+        }
+
+        @Test
+        void doesNotFindUnknownSlugs() {
+            assertThatThrownBy(() -> postService.findPublishedBySlug("does-not-exist"))
+                    .isInstanceOf(PostNotFoundException.class);
+        }
+
+        private void savePublished(String title, LocalDateTime publishedAt) {
+            Post post = new Post(title, title.toLowerCase().replace(' ', '-'), null, "content");
+            post.publish(publishedAt);
+            postRepository.save(post);
+        }
+    }
+
+  @Import(PostService.class) adds the real service to the @DataJpaTest
+  slice, so the test covers the service and its queries on real MySQL. No
+  mocks are needed. The saves are not flushed by hand, because Hibernate
+  flushes automatically before running a query.
+
+  Replace blog/src/test/java/com/blog/web/HomeControllerTest.java:
+
+    package com.blog.web;
+
+    import com.blog.post.PostService;
+    import com.blog.post.PostSummary;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+    import org.springframework.data.domain.Page;
+    import org.springframework.data.domain.PageImpl;
+    import org.springframework.data.domain.PageRequest;
+    import org.springframework.test.context.bean.override.mockito.MockitoBean;
+    import org.springframework.test.web.servlet.MockMvc;
+
+    import java.time.LocalDateTime;
+    import java.util.List;
+
+    import static org.hamcrest.Matchers.containsString;
+    import static org.hamcrest.Matchers.not;
+    import static org.mockito.BDDMockito.given;
+    import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
+
+    @WebMvcTest(HomeController.class)
+    class HomeControllerTest {
+
+        private static final PostSummary POST = new PostSummary(
+                1L, "First post", "first-post", "A short summary", LocalDateTime.of(2026, 9, 1, 9, 0));
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @MockitoBean
+        private PostService postService;
+
+        @Test
+        void homePageListsPublishedPosts() throws Exception {
+            given(postService.findPublished(1)).willReturn(pageOf(List.of(POST), 1, 1));
+
+            mockMvc.perform(get("/").header("Accept-Language", "de-DE"))
+                    .andExpect(status().isOk())
+                    .andExpect(view().name("home"))
+                    .andExpect(content().string(containsString("href=\"/posts/first-post\"")))
+                    .andExpect(content().string(containsString("A short summary")))
+                    .andExpect(content().string(containsString("1 September 2026")))
+                    .andExpect(content().string(not(containsString("Page 1 of"))));
+        }
+
+        @Test
+        void homePageShowsEmptyState() throws Exception {
+            given(postService.findPublished(1)).willReturn(Page.empty());
+
+            mockMvc.perform(get("/"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("No posts have been published yet.")));
+        }
+
+        @Test
+        void firstPageLinksToTheNextPage() throws Exception {
+            given(postService.findPublished(1)).willReturn(pageOf(List.of(POST), 1, 3));
+
+            mockMvc.perform(get("/"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("Page 1 of 3")))
+                    .andExpect(content().string(containsString("href=\"/?page=2\"")))
+                    .andExpect(content().string(not(containsString("rel=\"prev\""))));
+        }
+
+        @Test
+        void secondPageLinksBackToThePlainHomeUrl() throws Exception {
+            given(postService.findPublished(2)).willReturn(pageOf(List.of(POST), 2, 3));
+
+            mockMvc.perform(get("/").param("page", "2"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("Page 2 of 3")))
+                    .andExpect(content().string(containsString("href=\"/\">&larr; Newer posts")))
+                    .andExpect(content().string(containsString("href=\"/?page=3\"")));
+        }
+
+        @Test
+        void pageBeyondTheLastPageIsNotFound() throws Exception {
+            given(postService.findPublished(4)).willReturn(pageOf(List.of(), 4, 3));
+
+            mockMvc.perform(get("/").param("page", "4"))
+                    .andExpect(status().isNotFound());
+        }
+
+        @Test
+        void pageZeroIsNotFound() throws Exception {
+            mockMvc.perform(get("/").param("page", "0"))
+                    .andExpect(status().isNotFound());
+        }
+
+        @Test
+        void aboutPageRenders() throws Exception {
+            mockMvc.perform(get("/about"))
+                    .andExpect(status().isOk())
+                    .andExpect(view().name("about"));
+        }
+
+        private static Page<PostSummary> pageOf(List<PostSummary> posts, int pageNumber, int totalPages) {
+            long totalElements = (long) totalPages * PostService.PAGE_SIZE;
+            return new PageImpl<>(posts, PageRequest.of(pageNumber - 1, PostService.PAGE_SIZE), totalElements);
+        }
+    }
+
+  pageOf builds a fake Page with the given number of total pages, so the
+  pagination links can be tested without a database.
+
+  Create blog/src/test/java/com/blog/web/PostControllerTest.java:
+
+    package com.blog.web;
+
+    import com.blog.post.PostDetail;
+    import com.blog.post.PostNotFoundException;
+    import com.blog.post.PostService;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+    import org.springframework.test.context.bean.override.mockito.MockitoBean;
+    import org.springframework.test.web.servlet.MockMvc;
+
+    import java.time.LocalDateTime;
+
+    import static org.hamcrest.Matchers.containsString;
+    import static org.mockito.BDDMockito.given;
+    import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
+
+    @WebMvcTest(PostController.class)
+    class PostControllerTest {
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @MockitoBean
+        private PostService postService;
+
+        @Test
+        void showsPublishedPost() throws Exception {
+            given(postService.findPublishedBySlug("hello-world")).willReturn(new PostDetail(
+                    "Hello world", "hello-world", "A summary", "The full content.", LocalDateTime.of(2026, 9, 1, 9, 0)));
+
+            mockMvc.perform(get("/posts/hello-world"))
+                    .andExpect(status().isOk())
+                    .andExpect(view().name("post"))
+                    .andExpect(content().string(containsString("<title>Hello world | Blog</title>")))
+                    .andExpect(content().string(containsString("The full content.")));
+        }
+
+        @Test
+        void escapesHtmlInContent() throws Exception {
+            given(postService.findPublishedBySlug("xss")).willReturn(new PostDetail(
+                    "XSS", "xss", null, "<script>alert(1)</script>", LocalDateTime.of(2026, 9, 1, 9, 0)));
+
+            mockMvc.perform(get("/posts/xss"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("&lt;script&gt;alert(1)&lt;/script&gt;")));
+        }
+
+        @Test
+        void unknownPostIsNotFound() throws Exception {
+            given(postService.findPublishedBySlug("missing")).willThrow(new PostNotFoundException("missing"));
+
+            mockMvc.perform(get("/posts/missing"))
+                    .andExpect(status().isNotFound());
+        }
+    }
+
+  escapesHtmlInContent is a safety net for step 004. When content becomes
+  Markdown, a version of this test must still prove that a <script> tag is
+  never sent to the browser as-is.
+
+  Create blog/src/test/java/com/blog/web/ErrorPageTest.java:
+
+    package com.blog.web;
+
+    import com.blog.TestcontainersConfiguration;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Value;
+    import org.springframework.boot.test.context.SpringBootTest;
+    import org.springframework.context.annotation.Import;
+    import org.springframework.test.context.ActiveProfiles;
+
+    import java.net.URI;
+    import java.net.http.HttpClient;
+    import java.net.http.HttpRequest;
+    import java.net.http.HttpResponse;
+
+    import static org.assertj.core.api.Assertions.assertThat;
+
+    /**
+     * MockMvc does not forward errors to Spring Boot's error page, so this test
+     * runs the real server to check what visitors actually see.
+     */
+    @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+    @Import(TestcontainersConfiguration.class)
+    @ActiveProfiles("test")
+    class ErrorPageTest {
+
+        @Value("${local.server.port}")
+        private int port;
+
+        private final HttpClient httpClient = HttpClient.newHttpClient();
+
+        @Test
+        void unknownPostShowsTheNotFoundPage() throws Exception {
+            HttpResponse<String> response = get("/posts/does-not-exist");
+
+            assertThat(response.statusCode()).isEqualTo(404);
+            assertThat(response.body()).contains("Page not found").contains("site-header");
+        }
+
+        @Test
+        void unknownUrlShowsTheNotFoundPage() throws Exception {
+            HttpResponse<String> response = get("/no-such-page");
+
+            assertThat(response.statusCode()).isEqualTo(404);
+            assertThat(response.body()).contains("Page not found");
+        }
+
+        private HttpResponse<String> get(String path) throws Exception {
+            HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                    .header("Accept", "text/html")
+                    .build();
+            return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        }
+    }
+
+  Notes:
+  - RANDOM_PORT starts the real Tomcat on a free port. Spring puts that
+    port in the local.server.port property.
+  - The Accept: text/html header matters. Without it, Spring Boot answers
+    errors with JSON instead of the HTML page, which is how a browser
+    request and an API request get different responses.
+  - Checking for "site-header" proves the error page uses the shared
+    layout, not Spring's default "Whitelabel Error Page".
+
+
+4. VERIFY
+---------
+  a) Run the tests:
+
+       .\mvnw verify
+
+     Expected: "Tests run: 20, Failures: 0" and "BUILD SUCCESS".
+
+  b) Run the application:
+
+       .\mvnw spring-boot:run
+
+     Liquibase runs 2 changesets (003 and 004). Then check in the browser:
+     - http://localhost:8080 shows 5 posts and "Page 1 of 2", with an
+       "Older posts" link. Page 2 shows the remaining 2 posts and a
+       "Newer posts" link back to /.
+     - Clicking a title opens the post, for example
+       /posts/why-liquibase-owns-the-schema, with the post title in the
+       browser tab.
+     - These all show the styled "Page not found" page:
+         /posts/an-unfinished-draft   (a draft)
+         /posts/no-such-post          (unknown slug)
+         /?page=3                     (past the last page)
+         /no-such-page                (unknown URL)
+
+  c) Optional: check the backfilled slugs:
+
+       docker exec -it blog-mysql mysql -ubloguser -pblogpass blogdb -e "SELECT id, title, slug FROM posts;"
+
+  Troubleshooting
+  - "Validation Failed: 1 changesets check sum": see "Never edit a
+    changeset that has run" in the Concepts section above.
+  - "Duplicate entry '...' for key 'posts.uk_posts_slug'" while migrating:
+    two existing posts have titles that produce the same slug. In
+    development, change one title with an UPDATE and restart. For real
+    data, change the backfill so it adds the id to duplicates.
+  - The error page is Spring's "Whitelabel Error Page": the template is in
+    the wrong folder. It must be templates/error/404.html, not
+    templates/404.html.
+
+
+5. COMMIT
+---------
+  git add -A
+  git commit -m "Step 003: Post pages with slugs, pagination, and error pages"

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head(${query.isEmpty() ? 'Search' : 'Search: ' + query})}"></head>
+<body>
+<header th:replace="~{fragments/layout :: header('')}"></header>
+
+<main class="container">
+    <h1 class="page-title" th:text="${query.isEmpty() ? 'Search' : 'Results for ' + query}">Search</h1>
+
+    <p th:if="${query.isEmpty()}" class="empty-state">
+        Type a word in the search box to find published posts by title or content.
+    </p>
+    <p th:if="${!query.isEmpty() && posts.isEmpty()}" class="empty-state">
+        No published posts match that search.
+    </p>
+
+    <th:block th:each="post : ${posts}">
+        <article th:replace="~{fragments/layout :: post-card(${post})}"></article>
+    </th:block>
+
+    <nav th:replace="~{fragments/layout :: pagination(${posts}, '/search')}"></nav>
+
+    <p th:unless="${query.isEmpty()}"><a th:href="@{/}">&larr; All posts</a></p>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>

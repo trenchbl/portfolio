@@ -1,0 +1,344 @@
+STEP 009 - DOCKER AND DEPLOYMENT
+================================
+
+
+1. GOAL
+-------
+At the end of this step you will have:
+- A multi-stage Dockerfile that builds the jar and runs it on a JRE image
+- Compose that can start MySQL alone (local Maven workflow) or the full
+  stack (app container + MySQL) behind a Compose profile
+- A prod Spring profile: no sample data, no SQL logging, secrets from
+  environment variables
+- Spring Boot Actuator with a public /actuator/health endpoint for
+  container and load-balancer probes
+- .env.example (and .env gitignored) for Compose secrets
+- Notes on how to run and deploy
+
+
+2. CONCEPTS
+-----------
+Dev vs. prod configuration
+  The default application.properties stays aimed at a laptop: Liquibase
+  context "dev" (sample posts), show-sql on, database on localhost.
+  application-prod.properties turns those off. You activate it with
+  SPRING_PROFILES_ACTIVE=prod. Same jar, different behaviour.
+
+Secrets from the environment
+  Spring Boot maps SPRING_DATASOURCE_URL to spring.datasource.url,
+  BLOG_ADMIN_PASSWORD to blog.admin.password, and so on. The Docker
+  Compose app service sets those variables. Nothing secret belongs in
+  the image or in Git.
+
+Multi-stage Docker build
+  Stage 1 (JDK): copy the Maven Wrapper and sources, run
+  ./mvnw -DskipTests package. Stage 2 (JRE): copy only the jar. The
+  final image has no source code and no Maven cache. DevTools is
+  optional and is left out of the repackaged jar by the Spring Boot
+  plugin.
+
+Compose profile for the app
+  The mysql service has no profile, so "docker compose up -d" still
+  starts only the database for local Maven runs. The app service uses
+  profiles: ["app"], so you opt into the full stack with
+  "docker compose --profile app up --build".
+
+Health checks
+  Actuator's /actuator/health returns {"status":"UP"} when the app can
+  talk to its dependencies. Docker HEALTHCHECK and Compose use that URL.
+  Keep show-details=never so the public URL does not leak component
+  names. Security already permits everything except /admin/**; the
+  health matchers are listed explicitly so a future lockdown does not
+  break probes.
+
+
+3. INSTRUCTIONS
+---------------
+3.1 Actuator dependency
+
+  In blog/pom.xml, next to spring-boot-starter-security:
+
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+3.2 Default management settings
+
+  At the end of blog/src/main/resources/application.properties:
+
+    # Health for Docker and load balancers; only this endpoint is exposed by default
+    management.endpoints.web.exposure.include=health
+    management.endpoint.health.show-details=never
+
+3.3 Production profile
+
+  Create blog/src/main/resources/application-prod.properties:
+
+    # Production profile: no sample data, no SQL logging, secrets from the environment.
+    #
+    # Activate with SPRING_PROFILES_ACTIVE=prod (or --spring.profiles.active=prod).
+    # Set at least:
+    #   SPRING_DATASOURCE_URL
+    #   SPRING_DATASOURCE_USERNAME
+    #   SPRING_DATASOURCE_PASSWORD
+    # and, while the users table is empty:
+    #   BLOG_ADMIN_USERNAME
+    #   BLOG_ADMIN_PASSWORD  (at least 12 characters)
+
+    # Empty context: only changesets without a contextFilter run (schema, not sample posts)
+    spring.liquibase.contexts=
+
+    spring.jpa.show-sql=false
+    spring.jpa.properties.hibernate.format_sql=false
+
+    # Docker / orchestrators probe this; keep details off so the URL stays public
+    management.endpoint.health.probes.enabled=true
+
+  An empty liquibase.contexts value means changesets with
+  contextFilter="dev" (sample posts and tags) do not run. Schema
+  changesets have no filter, so they still run on a fresh database.
+
+3.4 Security: keep health public
+
+  In SecurityConfig, before anyRequest().permitAll():
+
+    .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+
+3.5 Dockerfile
+
+  Create blog/Dockerfile:
+
+    # Build the jar inside Docker so the image does not depend on a local Maven install.
+    FROM eclipse-temurin:21-jdk-jammy AS build
+    WORKDIR /workspace
+
+    COPY mvnw pom.xml ./
+    COPY .mvn .mvn
+    RUN chmod +x mvnw \
+        && ./mvnw -B -q dependency:go-offline
+
+    COPY src src
+    RUN ./mvnw -B -DskipTests package \
+        && mv target/blog-*.jar target/application.jar
+
+    # Small runtime image: JRE only, plus curl for the container health check
+    FROM eclipse-temurin:21-jre-jammy AS runtime
+    WORKDIR /app
+
+    RUN apt-get update \
+        && apt-get install -y --no-install-recommends curl \
+        && rm -rf /var/lib/apt/lists/*
+
+    COPY --from=build /workspace/target/application.jar application.jar
+
+    EXPOSE 8080
+
+    HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
+        CMD curl -fsS http://localhost:8080/actuator/health | grep -q '"status":"UP"' || exit 1
+
+    ENTRYPOINT ["java", "-jar", "application.jar"]
+
+  Notes:
+  - dependency:go-offline is cached in a layer; source changes only
+    rebuild the package step.
+  - The jar is renamed to application.jar so the COPY line stays stable
+    when the version in pom.xml changes.
+  - start-period gives Liquibase and Hibernate time before the first
+    failed probe counts as unhealthy.
+
+3.6 .dockerignore
+
+  Create blog/.dockerignore:
+
+    target/
+    .git/
+    .idea/
+    .vscode/
+    *.iml
+    application-local.properties
+    .env
+    implementation-notes/
+    HELP.md
+    **/mvnw.cmd
+
+  Leaving local secrets and the host's target/ out of the build context
+  keeps the image smaller and safer.
+
+3.7 Compose: MySQL + optional app
+
+  Replace blog/compose.yaml with:
+
+    # Local development (MySQL only), then run the app with Maven:
+    #   docker compose up -d
+    #   .\mvnw.cmd spring-boot:run
+    #
+    # Full stack (app container + MySQL), production-like:
+    #   copy .env.example to .env and set passwords
+    #   docker compose --profile app up --build
+
+    services:
+      mysql:
+        image: mysql:8.4
+        container_name: blog-mysql
+        environment:
+          MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+          MYSQL_DATABASE: ${MYSQL_DATABASE:-blogdb}
+          MYSQL_USER: ${MYSQL_USER:-bloguser}
+          MYSQL_PASSWORD: ${MYSQL_PASSWORD:-blogpass}
+        ports:
+          - "3306:3306"
+        volumes:
+          - blog-mysql-data:/var/lib/mysql
+        healthcheck:
+          test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+          interval: 10s
+          timeout: 5s
+          retries: 10
+
+      app:
+        profiles: ["app"]
+        build: .
+        container_name: blog-app
+        ports:
+          - "8080:8080"
+        environment:
+          SPRING_PROFILES_ACTIVE: prod
+          SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-blogdb}
+          SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-bloguser}
+          SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:-blogpass}
+          BLOG_ADMIN_USERNAME: ${BLOG_ADMIN_USERNAME:-admin}
+          BLOG_ADMIN_PASSWORD: ${BLOG_ADMIN_PASSWORD:-}
+        depends_on:
+          mysql:
+            condition: service_healthy
+
+    volumes:
+      blog-mysql-data:
+
+  The JDBC host is "mysql" (the service name), not localhost: inside the
+  Compose network that name resolves to the database container.
+
+3.8 Env files
+
+  Create blog/.env.example:
+
+    # Copy to .env and fill in real values before: docker compose --profile app up --build
+    # Docker Compose loads .env automatically. Do not commit .env.
+
+    MYSQL_ROOT_PASSWORD=change-me-root
+    MYSQL_DATABASE=blogdb
+    MYSQL_USER=bloguser
+    MYSQL_PASSWORD=change-me-db
+
+    # Used once, while the users table is empty (at least 12 characters)
+    BLOG_ADMIN_USERNAME=admin
+    BLOG_ADMIN_PASSWORD=change-me-admin-password
+
+  Add .env to blog/.gitignore next to application-local.properties.
+
+3.9 Test
+
+  Create blog/src/test/java/com/blog/web/ActuatorHealthTest.java:
+
+    package com.blog.web;
+
+    import com.blog.TestcontainersConfiguration;
+    import org.junit.jupiter.api.Test;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.boot.test.context.SpringBootTest;
+    import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+    import org.springframework.context.annotation.Import;
+    import org.springframework.test.context.ActiveProfiles;
+    import org.springframework.test.web.servlet.MockMvc;
+
+    import static org.hamcrest.Matchers.containsString;
+    import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+    import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+    @SpringBootTest
+    @AutoConfigureMockMvc
+    @Import(TestcontainersConfiguration.class)
+    @ActiveProfiles("test")
+    class ActuatorHealthTest {
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @Test
+        void healthEndpointIsPublicAndUp() throws Exception {
+            mockMvc.perform(get("/actuator/health"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("UP"))
+                    .andExpect(content().string(containsString("\"status\":\"UP\"")));
+        }
+    }
+
+
+4. VERIFY
+---------
+  a) Run the tests:
+
+       .\mvnw verify
+
+     Expected: "Tests run: 145, Failures: 0" and "BUILD SUCCESS".
+
+  b) Local Maven workflow (unchanged idea):
+
+       docker compose up -d
+       .\mvnw spring-boot:run
+
+     Open http://localhost:8080 and http://localhost:8080/actuator/health
+     (expect {"status":"UP"}). Stop the Maven app with Ctrl+C.
+
+  c) Full stack:
+
+       copy .env.example to .env and set BLOG_ADMIN_PASSWORD (12+ chars)
+       docker compose --profile app up --build
+
+     Wait until "blog-app" is healthy (`docker compose ps`). Then:
+     1. http://localhost:8080 shows the site
+     2. http://localhost:8080/actuator/health returns UP
+     3. Log in at /login with BLOG_ADMIN_USERNAME / BLOG_ADMIN_PASSWORD
+        from .env (if the users table was empty when the container started)
+
+     Stop the app container (keep MySQL):
+
+       docker compose --profile app stop app
+
+     Or stop everything:
+
+       docker compose --profile app down
+
+  Deploying to a host (notes)
+  - Build and push the image to a registry, or build on the server.
+  - Run MySQL (managed service or a container) and point
+    SPRING_DATASOURCE_* at it.
+  - Set SPRING_PROFILES_ACTIVE=prod and BLOG_ADMIN_* for the first boot.
+  - Put a reverse proxy (Caddy, nginx, Traefik) in front for HTTPS.
+  - Probe /actuator/health for readiness; do not expose other Actuator
+    endpoints unless they are authenticated.
+  - Prefer a fresh volume/database in production so Liquibase does not
+    reuse your laptop's sample data. Prod profile skips contextFilter=dev
+    changesets on a new database.
+
+  Troubleshooting
+  - App unhealthy / connection refused to mysql: the JDBC URL still says
+    localhost. Inside Compose it must be jdbc:mysql://mysql:3306/...
+  - "Port 8080 is already allocated": stop the Maven app or the old
+    blog-app container.
+  - No admin can log in: users table already had a row, or
+    BLOG_ADMIN_PASSWORD was empty/short. Check docker logs blog-app.
+  - Sample posts appear in Docker: the volume already had data from
+    local "dev" runs. Prod only skips sample inserts on a fresh schema.
+  - Docker build fails on mvnw: .dockerignore must not exclude mvnw or
+    .mvn/, and the file must be executable (chmod +x in the Dockerfile).
+
+
+5. COMMIT
+---------
+  git status    (.env and application-local.properties must NOT be listed)
+  git add -A
+  git commit -m "Step 009: Docker image, Compose full stack, prod profile, and Actuator health"

@@ -1,0 +1,80 @@
+BLOG APPLICATION - STEP-BY-STEP GUIDE
+=====================================
+
+This guide builds a full-featured blog from an empty folder. Each numbered file
+is one step. Each step ends with a working, tested application and one git
+commit, so you can stop after any step and still have something that runs.
+
+
+TECH STACK
+----------
+- Java 21 (Spring Boot 4 needs at least Java 17; 21 is the current LTS you have installed)
+- Spring Boot 4.1.1, Maven (via the Maven Wrapper, ./mvnw)
+- Spring MVC + Thymeleaf for server-side rendered pages
+- Spring Data JPA (Hibernate) + MySQL 8.4
+- Liquibase for database migrations
+- Spring Security for login
+- CommonMark for Markdown rendering
+- JUnit 5, Spring Boot test slices, and Testcontainers for tests
+- Docker / Docker Compose for the database and, at the end, the whole stack
+
+
+ROADMAP
+-------
+001  Project setup
+     Generate the project, run MySQL in Docker, connect Spring Boot to it,
+     add an empty Liquibase changelog, show a "hello" home page, and get a
+     first Testcontainers-based test passing.
+
+002  Posts: data model and home page
+     Post entity + Liquibase table, repository, service layer, a shared
+     Thymeleaf layout (header, nav, footer), and a home page listing posts.
+     Tests: repository test (@DataJpaTest) and controller test (@WebMvcTest).
+
+003  Post detail pages and pagination
+     Readable URLs (/posts/my-first-post) using slugs, a 404 page for
+     unknown posts, and paginated lists (?page=2).
+
+004  Markdown content
+     Posts are written in Markdown and rendered to safe HTML (raw HTML in
+     the Markdown is escaped, so a post cannot inject scripts).
+
+005  Admin: create, edit, delete posts
+     Admin pages with forms, Bean Validation (@NotBlank, @Size), error
+     messages next to fields, draft/published status, and flash messages
+     ("Post saved"). Deletes use POST, never GET.
+
+006  Authentication with Spring Security
+     A users table, BCrypt-hashed passwords, a custom login page, an ADMIN
+     role, /admin/** protected, CSRF protection on all forms, and logout.
+     The first admin user comes from configuration, not from source code.
+
+007  Categories and tags
+     Each post has one category and many tags. Pages for /categories/{slug}
+     and /tags/{slug}, and category/tag pickers in the admin form.
+
+008  Search
+     A search box that finds published posts by title and content, with
+     paginated results.
+
+009  Docker and deployment
+     Multi-stage Dockerfile, a Compose file for the full stack, profiles for
+     dev vs. prod configuration, secrets from environment variables, health
+     checks via Spring Boot Actuator, and notes on deploying to a host.
+
+
+TESTING APPROACH
+----------------
+There is no separate "write tests" step at the end. Each step adds tests for
+what it builds, and "./mvnw verify" must pass before you commit. Tests that
+need a database start a throwaway MySQL container via Testcontainers, so
+Docker Desktop must be running while tests run.
+
+
+HOW EACH STEP FILE IS ORGANISED
+-------------------------------
+1. Goal         - what you will have at the end of the step
+2. Concepts     - the "why" behind the important decisions
+3. Instructions - files to create or change, with full code
+4. Verify       - commands to run and what you should see
+5. Commit       - a suggested commit message

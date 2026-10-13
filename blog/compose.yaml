@@ -1,0 +1,46 @@
+# Local development (MySQL only), then run the app with Maven:
+#   docker compose up -d
+#   .\mvnw.cmd spring-boot:run
+#
+# Full stack (app container + MySQL), production-like:
+#   copy .env.example to .env and set passwords
+#   docker compose --profile app up --build
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: blog-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-blogdb}
+      MYSQL_USER: ${MYSQL_USER:-bloguser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-blogpass}
+    ports:
+      - "3306:3306"
+    volumes:
+      - blog-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    profiles: ["app"]
+    build: .
+    container_name: blog-app
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-blogdb}
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-bloguser}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:-blogpass}
+      BLOG_ADMIN_USERNAME: ${BLOG_ADMIN_USERNAME:-admin}
+      BLOG_ADMIN_PASSWORD: ${BLOG_ADMIN_PASSWORD:-}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  blog-mysql-data:

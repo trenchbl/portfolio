@@ -10,24 +10,21 @@ This repository serves as a portfolio showcasing practical software development 
 
 ### [Blog Application](./blog)
 
-A full-featured blogging platform built with Spring Boot and MySQL.
+A server-rendered blogging platform with Markdown posts, categories and tags, search, and an admin UI protected by Spring Security.
 
-**Key Features:**
-- RESTful web application with Spring Boot
-- MySQL database integration with Spring Data JPA
-- Database version control using Liquibase
-- Server-side rendering with Thymeleaf
-- Docker containerization for database
-- Responsive multi-page design
+**Key features:**
+- Public post list, detail pages, categories, tags, and search
+- Admin CRUD for posts and categories (drafts and publishing)
+- Spring Security login (ADMIN role, CSRF, bcrypt)
+- Liquibase migrations, Actuator health, Docker image and Compose full stack
 
 **Technologies:**
-- Java 17, Spring Boot 3.2.0, Maven
-- MySQL 8.0, Liquibase
-- Spring Data JPA, Hibernate
-- Thymeleaf, HTML5, CSS3
-- Docker, Docker Compose
+- Java 21, Spring Boot 4.1.1, Maven
+- MySQL 8.4, Liquibase, Spring Data JPA
+- Thymeleaf, Spring Security, Actuator, CommonMark
+- Docker Compose, Testcontainers
 
-[View Project →](./blog/README.md)
+[Setup and run →](./blog/README.md)
 
 ## Getting Started
 

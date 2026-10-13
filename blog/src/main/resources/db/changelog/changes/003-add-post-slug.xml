@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <changeSet id="003-add-post-slug" author="blog">
+        <addColumn tableName="posts">
+            <column name="slug" type="VARCHAR(200)" afterColumn="title"/>
+        </addColumn>
+
+        <!-- Backfill existing rows: "Why Liquibase owns the schema" becomes "why-liquibase-owns-the-schema" -->
+        <sql>
+            UPDATE posts
+            SET slug = TRIM(BOTH '-' FROM LOWER(REGEXP_REPLACE(title, '[^A-Za-z0-9]+', '-')))
+        </sql>
+
+        <addNotNullConstraint tableName="posts" columnName="slug" columnDataType="VARCHAR(200)"/>
+        <addUniqueConstraint tableName="posts" columnNames="slug" constraintName="uk_posts_slug"/>
+    </changeSet>
+
+</databaseChangeLog>
