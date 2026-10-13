@@ -1,4 +1,4 @@
-package com.blog.post;
+package com.blog.post.search;
 
 import java.util.Arrays;
 import java.util.Locale;
@@ -8,13 +8,13 @@ import java.util.stream.Collectors;
 /**
  * Turns what a visitor types into a MySQL full-text query in boolean mode.
  */
-final class SearchTerms {
+public final class SearchTerms {
 
     /**
      * InnoDB does not index shorter words (innodb_ft_min_token_size).
      */
-    static final int MIN_WORD_LENGTH = 3;
-    static final int MAX_WORDS = 10;
+    public static final int MIN_WORD_LENGTH = 3;
+    public static final int MAX_WORDS = 10;
 
     private static final Pattern NOT_A_WORD_CHARACTER = Pattern.compile("[^\\p{L}\\p{N}]+");
 
@@ -29,7 +29,7 @@ final class SearchTerms {
      *
      * @return an empty string if no word is long enough to search for
      */
-    static String toBooleanQuery(String text) {
+    public static String toBooleanQuery(String text) {
         if (text == null) {
             return "";
         }

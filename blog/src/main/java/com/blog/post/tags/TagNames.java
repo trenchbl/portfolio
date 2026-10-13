@@ -1,13 +1,15 @@
-package com.blog.post;
+package com.blog.post.tags;
+
+import com.blog.post.Slugs;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-final class TagNames {
+public final class TagNames {
 
-    static final int MAX_TAGS = 10;
-    static final int MAX_LENGTH = 30;
+    public static final int MAX_TAGS = 10;
+    public static final int MAX_LENGTH = 30;
 
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
@@ -21,7 +23,7 @@ final class TagNames {
      *
      * @throws InvalidTagsException with a message for the author
      */
-    static Map<String, String> parse(String input) {
+    public static Map<String, String> parse(String input) {
         Map<String, String> namesBySlug = new LinkedHashMap<>();
         if (input == null) {
             return namesBySlug;

@@ -1,4 +1,4 @@
-package com.blog.post;
+package com.blog.post.categories;
 
 /**
  * The message is written for authors and is shown next to the name field.

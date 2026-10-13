@@ -1,5 +1,8 @@
 package com.blog.post;
 
+import com.blog.post.categories.CategoryLink;
+import com.blog.post.tags.TagLink;
+
 import java.time.LocalDateTime;
 import java.util.List;
 

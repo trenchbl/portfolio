@@ -1,4 +1,4 @@
-package com.blog.post;
+package com.blog.post.search;
 
 import java.util.Locale;
 
@@ -6,9 +6,9 @@ import java.util.Locale;
  * Turns a visitor's search into a LIKE pattern. {@code %} and {@code _}
  * are escaped, so they are ordinary characters and cannot match every post.
  */
-final class SearchQueries {
+public final class SearchQueries {
 
-    static final int MAX_LENGTH = 100;
+    public static final int MAX_LENGTH = 100;
 
     private SearchQueries() {
     }
@@ -17,7 +17,7 @@ final class SearchQueries {
      * {@code "MySQL_8"} becomes {@code "%mysql\\_8%"}. Blank input becomes
      * empty, so the service can skip the database.
      */
-    static String likePattern(String query) {
+    public static String likePattern(String query) {
         String term = normalize(query);
         if (term.isEmpty()) {
             return "";
@@ -26,7 +26,7 @@ final class SearchQueries {
         return "%" + escaped + "%";
     }
 
-    static String normalize(String query) {
+    public static String normalize(String query) {
         if (query == null) {
             return "";
         }

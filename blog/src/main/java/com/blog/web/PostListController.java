@@ -1,8 +1,8 @@
 package com.blog.web;
 
-import com.blog.post.CategoryLink;
 import com.blog.post.PostService;
-import com.blog.post.TagLink;
+import com.blog.post.categories.CategoryLink;
+import com.blog.post.tags.TagLink;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;

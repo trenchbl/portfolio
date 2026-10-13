@@ -5,9 +5,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-final class Slugs {
+public final class Slugs {
 
-    static final int MAX_LENGTH = 200;
+    public static final int MAX_LENGTH = 200;
 
     private static final Pattern DIACRITICS = Pattern.compile("\\p{M}+");
     private static final Pattern NON_ALPHANUMERIC = Pattern.compile("[^a-z0-9]+");
@@ -29,7 +29,7 @@ final class Slugs {
      * "Café & Crème: Part 2!" becomes "cafe-creme-part-2". Returns an empty
      * string if the text contains no letters or digits.
      */
-    static String slugify(String text) {
+    public static String slugify(String text) {
         String lowerCase = text.toLowerCase(Locale.ROOT);
         for (Map.Entry<String, String> letter : LETTERS_WITHOUT_DECOMPOSITION.entrySet()) {
             lowerCase = lowerCase.replace(letter.getKey(), letter.getValue());

@@ -1,6 +1,8 @@
-package com.blog.post;
+package com.blog.post.categories;
 
 import com.blog.TestcontainersConfiguration;
+import com.blog.post.Post;
+import com.blog.post.PostRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -26,10 +28,10 @@ class CategoryServiceTest {
 
     @Test
     void createsCategoryWithSlugFromName() {
-        categoryService.create(form("  Grüße aus Köln "));
+        categoryService.create(form("  Gr\u00FC\u00DFe aus K\u00F6ln "));
 
         Category category = categoryRepository.findBySlug("grusse-aus-koln").orElseThrow();
-        assertThat(category.getName()).isEqualTo("Grüße aus Köln");
+        assertThat(category.getName()).isEqualTo("Gr\u00FC\u00DFe aus K\u00F6ln");
     }
 
     @Test

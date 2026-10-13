@@ -1,4 +1,4 @@
-package com.blog.post;
+package com.blog.post.categories;
 
 /**
  * @param postCount all posts in the category, drafts included

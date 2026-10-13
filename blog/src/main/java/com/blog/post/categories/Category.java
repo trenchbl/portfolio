@@ -1,4 +1,4 @@
-package com.blog.post;
+package com.blog.post.categories;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -8,8 +8,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 @Entity
-@Table(name = "tags")
-public class Tag {
+@Table(name = "categories")
+public class Category {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -21,10 +21,10 @@ public class Tag {
     @Column(nullable = false, length = 100)
     private String slug;
 
-    protected Tag() {
+    protected Category() {
     }
 
-    public Tag(String name, String slug) {
+    public Category(String name, String slug) {
         this.name = name;
         this.slug = slug;
     }

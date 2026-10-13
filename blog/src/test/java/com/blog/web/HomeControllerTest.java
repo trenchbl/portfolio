@@ -1,9 +1,9 @@
 package com.blog.web;
 
-import com.blog.post.CategoryLink;
 import com.blog.post.PostService;
 import com.blog.post.PostSummary;
-import com.blog.post.TagLink;
+import com.blog.post.categories.CategoryLink;
+import com.blog.post.tags.TagLink;
 import com.blog.security.SecurityConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

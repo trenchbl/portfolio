@@ -1,8 +1,8 @@
 package com.blog.web;
 
-import com.blog.post.CategoryForm;
-import com.blog.post.CategoryService;
-import com.blog.post.InvalidCategoryNameException;
+import com.blog.post.categories.CategoryForm;
+import com.blog.post.categories.CategoryService;
+import com.blog.post.categories.InvalidCategoryNameException;
 import jakarta.validation.Valid;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;

@@ -1,10 +1,10 @@
 package com.blog.web;
 
-import com.blog.post.AdminCategoryItem;
 import com.blog.post.AdminPostItem;
-import com.blog.post.CategoryLink;
-import com.blog.post.CategoryService;
-import com.blog.post.InvalidTagsException;
+import com.blog.post.categories.AdminCategoryItem;
+import com.blog.post.categories.CategoryLink;
+import com.blog.post.categories.CategoryService;
+import com.blog.post.tags.InvalidTagsException;
 import com.blog.post.PostDetail;
 import com.blog.post.PostForm;
 import com.blog.post.PostNotFoundException;

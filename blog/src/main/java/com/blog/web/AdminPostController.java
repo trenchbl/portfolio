@@ -1,7 +1,7 @@
 package com.blog.web;
 
-import com.blog.post.CategoryService;
-import com.blog.post.InvalidTagsException;
+import com.blog.post.categories.CategoryService;
+import com.blog.post.tags.InvalidTagsException;
 import com.blog.post.PostForm;
 import com.blog.post.PostService;
 import com.blog.post.SlugAlreadyUsedException;

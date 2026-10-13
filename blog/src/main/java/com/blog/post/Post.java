@@ -1,5 +1,7 @@
 package com.blog.post;
 
+import com.blog.post.categories.Category;
+import com.blog.post.tags.Tag;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
